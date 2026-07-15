@@ -1,9 +1,0 @@
-{
-  "name": "xiaobai-suanpan",
-  "installCommand": "npm install -g pnpm && cd apps/web && pnpm install --frozen-lockfile",
-  "buildCommand": "cd apps/web && ESA_STATIC_EXPORT=true pnpm build",
-  "assets": {
-    "directory": "./apps/web/out",
-    "notFoundStrategy": "404Page"
-  }
-}
