@@ -1,0 +1,13 @@
+{
+  "name": "小白算盘 · OWNER 私有版",
+  "short_name": "小白算盘",
+  "description": "AI 个人资产清算与财富管理助手",
+  "start_url": "/dashboard",
+  "display": "standalone",
+  "background_color": "#f7f5fb",
+  "theme_color": "#3b176b",
+  "icons": [
+    {"src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable"}
+  ]
+}
+
