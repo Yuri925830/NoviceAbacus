@@ -24,7 +24,7 @@ services:
     env_file: .env.local
     environment:
       DATABASE_URL: postgresql+psycopg://xiaobai:${POSTGRES_PASSWORD:-xiaobai-local-only}@postgres:5432/xiaobai
-    ports: ["8000:8000"]
+    ports: ["127.0.0.1:8000:8000"]
     depends_on:
       postgres:
         condition: service_healthy
@@ -34,7 +34,7 @@ services:
   openai-gateway:
     build: ./apps/openai-gateway
     env_file: .env.local
-    ports: ["8100:8100"]
+    ports: ["127.0.0.1:8100:8100"]
 
   web:
     build:
