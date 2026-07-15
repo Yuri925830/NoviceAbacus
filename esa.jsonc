@@ -1,6 +1,6 @@
 {
   "name": "xiaobai-suanpan",
-  "installCommand": "corepack enable && cd apps/web && pnpm install --frozen-lockfile",
+  "installCommand": "npm install -g pnpm && cd apps/web && pnpm install --frozen-lockfile",
   "buildCommand": "cd apps/web && ESA_STATIC_EXPORT=true pnpm build",
   "assets": {
     "directory": "./apps/web/out",
