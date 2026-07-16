@@ -18,7 +18,7 @@ export function PrivacyCanvas({
   onSubmit,
   loading,
 }: {
-  onSubmit: (blob: Blob, name: string) => Promise<void>;
+  onSubmit: (blob: Blob, name: string) => Promise<boolean>;
   loading: boolean;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -29,6 +29,7 @@ export function PrivacyCanvas({
   const [tool, setTool] = useState<"rect" | "brush" | "crop">("rect");
   const [ready, setReady] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
+  const [completed, setCompleted] = useState(false);
   const [history, setHistory] = useState<Snapshot[]>([]);
   const [index, setIndex] = useState(-1);
   useEffect(() => {
@@ -86,6 +87,7 @@ export function PrivacyCanvas({
     if (!file || !file.type.startsWith("image/")) return;
     setFileName(file.name);
     setConfirmed(false);
+    setCompleted(false);
     const url = URL.createObjectURL(file);
     const image = new Image();
     image.onload = () => {
@@ -106,6 +108,15 @@ export function PrivacyCanvas({
       URL.revokeObjectURL(url);
     };
     image.src = url;
+  }
+  function resetForNextImage() {
+    setFileName("");
+    setConfirmed(false);
+    setHistory([]);
+    setIndex(-1);
+    setReady(false);
+    setCompleted(true);
+    if (fileRef.current) fileRef.current.value = "";
   }
   function pointerDown(e: PointerEvent<HTMLCanvasElement>) {
     if (!ready) return;
@@ -156,11 +167,13 @@ export function PrivacyCanvas({
     const blob = await new Promise<Blob | null>((resolve) =>
       c.toBlob(resolve, "image/jpeg", 0.92),
     );
-    if (blob)
-      await onSubmit(
+    if (blob) {
+      const accepted = await onSubmit(
         blob,
         `masked-${fileName.replace(/\.[^.]+$/, "") || "asset"}.jpg`,
       );
+      if (accepted) resetForNextImage();
+    }
   }
   return (
     <div className="privacy-editor">
@@ -169,7 +182,11 @@ export function PrivacyCanvas({
         type="file"
         accept="image/*"
         hidden
-        onChange={(e) => loadFile(e.target.files?.[0])}
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          e.target.value = "";
+          loadFile(file);
+        }}
       />
       {!ready ? (
         <button
@@ -178,8 +195,8 @@ export function PrivacyCanvas({
         >
           <div>
             <ImagePlus />
-            <strong>选一张资产截图</strong>
-            <span>选好以后，可以先把不想露出的信息遮住。</span>
+            <strong>{completed ? "继续识别下一张资产截图" : "选一张资产截图"}</strong>
+            <span>{completed ? "上一张已处理完成，可以直接接着上传。" : "选好以后，可以先把不想露出的信息遮住。"}</span>
           </div>
         </button>
       ) : (

@@ -11,7 +11,7 @@ import {
   Skeleton,
 } from "@/components/ui";
 import { api, errorMessage, formatDate, money } from "@/lib/api";
-import type { AgentRecommendation, AgentReply } from "@/lib/agent";
+import { actionItemPayload, type AgentRecommendation, type AgentReply } from "@/lib/agent";
 import {
   Activity,
   BookmarkCheck,
@@ -358,7 +358,7 @@ function TrendContent() {
     try {
       await api("/intelligence/actions", {
         method: "POST",
-        body: JSON.stringify({ ...item, title: item.action, source: "TREND" }),
+        body: JSON.stringify(actionItemPayload(item, "TREND")),
       });
       setSavedActions((current) => [...current, index]);
     } catch (e) {

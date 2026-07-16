@@ -50,6 +50,20 @@ export function errorMessage(error: unknown): string {
   if (error instanceof ApiError) {
     if (typeof error.detail === "string") return error.detail;
     if (error.detail && typeof error.detail === "object" && "message" in error.detail) return String((error.detail as {message: unknown}).message);
+    if (Array.isArray(error.detail) && error.detail.length) {
+      const issue = error.detail[0] as {loc?: unknown[]; msg?: string; type?: string};
+      const field = String(issue.loc?.at(-1) || "这个字段");
+      const labels: Record<string, string> = {
+        monthly_income_cny: "每月固定收入",
+        monthly_essential_expenses_cny: "每月必要生活费",
+        monthly_current_expenses_cny: "维持当前生活的总开销",
+        emergency_months: "应急金月数",
+        amount_cny: "金额",
+        target_cny: "目标金额",
+      };
+      const reason = issue.type?.includes("greater_than") ? "需要填写一个大于 0 的数字" : "填写的数字或格式不正确";
+      return `${labels[field] || field}${reason}`;
+    }
   }
   return error instanceof Error ? error.message : "操作失败，请稍后重试";
 }

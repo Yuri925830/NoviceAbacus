@@ -10,6 +10,7 @@ import {
   CircleAlert,
   CircleCheck,
   Flag,
+  PartyPopper,
   PiggyBank,
   Pencil,
   Plus,
@@ -53,6 +54,8 @@ type FinancialGoal = {
   months_left?: number | null;
   required_monthly_cny?: string | null;
   analysis: string[];
+  completion_status: "IN_PROGRESS" | "AWAITING_CONFIRMATION" | "CONFIRMED";
+  completion_confirmed_at?: string | null;
   plan?: GoalPlan | null;
 };
 
@@ -87,9 +90,13 @@ function GoalsContent() {
   const [error, setError] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
+  const [editMode, setEditMode] = useState<"EDIT" | "UPGRADE">("EDIT");
   const [planEditOpen, setPlanEditOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [planning, setPlanning] = useState(false);
+  const [confirmingCompletion, setConfirmingCompletion] = useState(false);
+  const [celebrationGoal, setCelebrationGoal] = useState<FinancialGoal | null>(null);
+  const [celebrationReady, setCelebrationReady] = useState(false);
   const [newGoal, setNewGoal] = useState({
     name: "",
     goal_type: "NET_WORTH",
@@ -188,7 +195,7 @@ function GoalsContent() {
   }
 
   async function removeGoal(goal: FinancialGoal) {
-    if (!confirm(`确定删除“${goal.name}”吗？已经生成的智能计划也会一起删除。`)) return;
+    if (!confirm(`确定删除“${goal.name}”吗？已归属资金会恢复为可分配，已经生成的智能计划也会一起删除。`)) return;
     try {
       await api(`/goals/${goal.id}`, { method: "DELETE" });
       setSelectedId("");
@@ -198,7 +205,8 @@ function GoalsContent() {
     }
   }
 
-  function beginEditGoal(goal: FinancialGoal) {
+  function beginEditGoal(goal: FinancialGoal, mode: "EDIT" | "UPGRADE" = "EDIT") {
+    setEditMode(mode);
     setEditGoal({
       name: goal.name,
       goal_type: goal.goal_type,
@@ -207,6 +215,38 @@ function GoalsContent() {
       included_asset_types: goal.included_asset_types || [],
     });
     setEditOpen(true);
+  }
+
+  async function confirmCompletion(goal: FinancialGoal) {
+    setConfirmingCompletion(true);
+    setError("");
+    try {
+      const confirmed = await api<FinancialGoal>(`/goals/${goal.id}/completion/confirm`, { method: "POST" });
+      setGoals((current) => current.map((item) => item.id === confirmed.id ? confirmed : item));
+      window.dispatchEvent(new CustomEvent("goal-completion-confirmed", { detail: { goalId: confirmed.id } }));
+      setCelebrationGoal(confirmed);
+      setCelebrationReady(false);
+      window.setTimeout(() => setCelebrationReady(true), 1300);
+    } catch (e) {
+      setError(errorMessage(e));
+    } finally {
+      setConfirmingCompletion(false);
+    }
+  }
+
+  function keepCompletedGoal() {
+    setCelebrationGoal(null);
+    setCelebrationReady(false);
+  }
+
+  function upgradeCompletedGoal(goal: FinancialGoal) {
+    keepCompletedGoal();
+    beginEditGoal(goal, "UPGRADE");
+  }
+
+  async function deleteCompletedGoal(goal: FinancialGoal) {
+    keepCompletedGoal();
+    await removeGoal(goal);
   }
 
   async function saveGoal(e: FormEvent) {
@@ -355,6 +395,13 @@ function GoalsContent() {
           <CircleAlert /> <span>{error}</span>
         </div>
       ) : null}
+      {goals.filter((goal) => goal.completion_status === "AWAITING_CONFIRMATION").map((goal) => (
+        <div className="goal-completion-global-banner" key={goal.id}>
+          <CircleCheck />
+          <div><strong>您的{goal.name}理财目标已完成，请前往确认！</strong><span>确认后会播放庆祝礼花，并让你决定保留、升级或删除目标。</span></div>
+          <button type="button" onClick={() => { openGoal(goal.id); window.setTimeout(() => document.getElementById("goal-completion-confirm")?.scrollIntoView({ behavior: "smooth", block: "center" }), 80); }}>前往确认</button>
+        </div>
+      ))}
 
       {!goals.length ? (
         <Card className="card-pad">
@@ -440,6 +487,19 @@ function GoalsContent() {
                     <strong>{money(selected.gap_cny)}</strong>
                   </div>
                 </div>
+                {selected.completion_status === "AWAITING_CONFIRMATION" ? (
+                  <div className="goal-completion-confirm" id="goal-completion-confirm">
+                    <PartyPopper />
+                    <div><strong>您的{selected.name}理财目标已完成，请前往确认！</strong><span>点击确认，正式记下这个完成时刻。</span></div>
+                    <Button loading={confirmingCompletion} onClick={() => confirmCompletion(selected)}><CircleCheck /> 确认目标完成</Button>
+                  </div>
+                ) : selected.completion_status === "CONFIRMED" ? (
+                  <div className="goal-completion-confirm confirmed">
+                    <CircleCheck />
+                    <div><strong>这个目标已经完成并确认</strong><span>你可以一直保留这枚里程碑，也可以把它升级成下一阶段目标。</span></div>
+                    <Button variant="secondary" onClick={() => beginEditGoal(selected, "UPGRADE")}><Sparkles /> 升级目标</Button>
+                  </div>
+                ) : null}
               </Card>
 
               <div className="goal-detail-grid">
@@ -516,6 +576,8 @@ function GoalsContent() {
         </div>
       )}
 
+      {celebrationGoal ? <GoalCelebration goal={celebrationGoal} ready={celebrationReady} onKeep={keepCompletedGoal} onUpgrade={() => upgradeCompletedGoal(celebrationGoal)} onDelete={() => deleteCompletedGoal(celebrationGoal)} /> : null}
+
       <Modal open={createOpen} onClose={() => setCreateOpen(false)} title="写下一个新目标">
         <form onSubmit={createGoal}>
           <div className="form-grid">
@@ -578,7 +640,7 @@ function GoalsContent() {
         </form>
       </Modal>
 
-      <Modal open={editOpen} onClose={() => setEditOpen(false)} title="调整这个目标">
+      <Modal open={editOpen} onClose={() => setEditOpen(false)} title={editMode === "UPGRADE" ? "升级理财目标" : "调整这个目标"}>
         <form onSubmit={saveGoal}>
           <div className="form-grid">
             <Field label="目标名称">
@@ -591,7 +653,7 @@ function GoalsContent() {
                 <option value="SPECIFIC">特定资产目标</option>
               </select>
             </Field>
-            <Field label="目标金额（元）">
+            <Field label="目标金额（元）" hint={editMode === "UPGRADE" ? "提高目标金额，或调整日期，开启下一阶段。" : undefined}>
               <input inputMode="decimal" value={editGoal.target_cny} onChange={(e) => setEditGoal({ ...editGoal, target_cny: e.target.value })} required />
             </Field>
             <Field label="希望完成的日期" hint="可以随时修改，也可以留空。">
@@ -622,7 +684,7 @@ function GoalsContent() {
           </div>
           <div className="form-actions">
             <Button variant="ghost" type="button" onClick={() => setEditOpen(false)}>先不改</Button>
-            <Button loading={saving}><Pencil /> 保存修改</Button>
+            <Button loading={saving}>{editMode === "UPGRADE" ? <Sparkles /> : <Pencil />} {editMode === "UPGRADE" ? "保存升级" : "保存修改"}</Button>
           </div>
         </form>
       </Modal>
@@ -699,6 +761,52 @@ function GoalsContent() {
         </form>
       </Modal>
     </>
+  );
+}
+
+const celebrationColors = ["#7d38ce", "#f4c95d", "#f07aa8", "#6fd6c5", "#ffffff"];
+
+function GoalCelebration({
+  goal,
+  ready,
+  onKeep,
+  onUpgrade,
+  onDelete,
+}: {
+  goal: FinancialGoal;
+  ready: boolean;
+  onKeep: () => void;
+  onUpgrade: () => void;
+  onDelete: () => void | Promise<void>;
+}) {
+  const pieces = Array.from({ length: 56 }, (_, index) => ({
+    left: (index * 37) % 100,
+    delay: (index % 14) * 0.06,
+    duration: 1.8 + (index % 7) * 0.14,
+    drift: ((index * 29) % 120) - 60,
+    rotate: (index * 71) % 360,
+    color: celebrationColors[index % celebrationColors.length],
+  }));
+  return (
+    <div className="goal-celebration" role="dialog" aria-modal="true" aria-label={`${goal.name}目标完成庆祝`}>
+      <div className="goal-confetti" aria-hidden="true">
+        {pieces.map((piece, index) => <i key={index} className={index % 6 === 0 ? "ribbon" : ""} style={{ "--left": `${piece.left}%`, "--delay": `${piece.delay}s`, "--duration": `${piece.duration}s`, "--drift": `${piece.drift}px`, "--rotate": `${piece.rotate}deg`, "--color": piece.color } as React.CSSProperties} />)}
+      </div>
+      <Card className="goal-celebration-card">
+        <div className="goal-celebration-icon"><PartyPopper /></div>
+        <Badge tone="purple">目标达成</Badge>
+        <h2>恭喜你，{goal.name}完成啦！</h2>
+        <p>你已经为这个目标准备了 {money(goal.current_cny)}，这一步值得被认真记住。</p>
+        <div className={`goal-celebration-actions ${ready ? "ready" : ""}`}>
+          <span>接下来想怎样安排这个目标？</span>
+          <div>
+            <Button onClick={onKeep}><CircleCheck /> 保留目标</Button>
+            <Button variant="secondary" onClick={onUpgrade}><Sparkles /> 升级目标</Button>
+            <Button variant="danger" onClick={onDelete}><Trash2 /> 删除目标</Button>
+          </div>
+        </div>
+      </Card>
+    </div>
   );
 }
 

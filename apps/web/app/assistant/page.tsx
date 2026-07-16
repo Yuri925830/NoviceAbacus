@@ -3,7 +3,7 @@ import { Protected } from "@/components/app-shell";
 import { usePrivacy } from "@/components/providers";
 import { Badge, Button, Card, Field } from "@/components/ui";
 import { api, errorMessage, money } from "@/lib/api";
-import type { AgentRecommendation, AgentReply } from "@/lib/agent";
+import { actionItemPayload, type AgentRecommendation, type AgentReply } from "@/lib/agent";
 import {
   ArrowUp,
   Bot,
@@ -69,7 +69,7 @@ function AssistantContent() {
     try {
       await api("/intelligence/actions", {
         method: "POST",
-        body: JSON.stringify({ ...item, title: item.action, source: "ASSISTANT" }),
+        body: JSON.stringify(actionItemPayload(item, "ASSISTANT")),
       });
       setSavedActions((current) => [...current, index]);
     } catch (e) {

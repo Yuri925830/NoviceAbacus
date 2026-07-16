@@ -232,8 +232,8 @@ class FocusAcceptInput(BaseModel):
 
 class SpendingProfileInput(BaseModel):
     monthly_income_cny: Decimal = Field(ge=0)
-    monthly_essential_expenses_cny: Decimal = Field(gt=0)
-    monthly_current_expenses_cny: Decimal = Field(gt=0)
+    monthly_essential_expenses_cny: Decimal = Field(ge=0)
+    monthly_current_expenses_cny: Decimal = Field(ge=0)
     emergency_months: Decimal = Field(default=Decimal("6"), ge=1, le=24)
 
     @field_validator(

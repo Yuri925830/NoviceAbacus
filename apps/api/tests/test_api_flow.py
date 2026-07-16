@@ -283,6 +283,33 @@ def test_empty_legacy_draft_is_reseeded_edits_accept_decimals_and_ai_never_retur
     assert len(client.get("/spending/decisions").json()) == 1
 
 
+def test_integer_profile_values_and_action_ledger_are_accepted(client: TestClient):
+    login(client)
+    profile = client.put("/spending/profile", json={
+        "monthly_income_cny": 1,
+        "monthly_essential_expenses_cny": 0,
+        "monthly_current_expenses_cny": 0,
+        "emergency_months": 6,
+    })
+    assert profile.status_code == 200, profile.text
+    assert profile.json()["monthly_income_cny"] == "1.00"
+    assert profile.json()["monthly_essential_expenses_cny"] == "0.00"
+    assert profile.json()["monthly_current_expenses_cny"] == "0.00"
+
+    action = client.post("/intelligence/actions", json={
+        "title": "建立应急储备",
+        "reason": "先守住生活底线",
+        "expected_impact": "提高现金缓冲",
+        "risk": "需要控制非必要支出",
+        "review_trigger": "下次清算时复盘",
+        "priority": "HIGH",
+        "source": "DECISION_STUDIO",
+    })
+    assert action.status_code == 200, action.text
+    assert action.json()["title"] == "建立应急储备"
+    assert client.get("/intelligence/actions").json()[0]["source"] == "DECISION_STUDIO"
+
+
 def test_live_physical_gold_funding_guard_constitution_and_product_xray(client: TestClient, monkeypatch):
     login(client)
 
@@ -307,14 +334,35 @@ def test_live_physical_gold_funding_guard_constitution_and_product_xray(client: 
     assert confirmed.status_code == 200, confirmed.text
     assert confirmed.json()["totals"]["assets_cny"] == "9000.00"
 
-    goal = client.post("/goals", json={"name": "买车", "goal_type": "NET_WORTH", "target_cny": "10000", "included_asset_types": []}).json()
+    goal = client.post("/goals", json={"name": "买车", "goal_type": "NET_WORTH", "target_cny": "5000", "included_asset_types": []}).json()
     funding = client.get("/funding/map")
     key = funding.json()["assets"][0]["asset_key"]
     rejected = client.put("/funding/allocations", json={"allocations": [{"asset_key": key, "goal_id": goal["id"], "amount_cny": "10000"}]})
     assert rejected.status_code == 422
-    saved = client.put("/funding/allocations", json={"allocations": [{"asset_key": key, "goal_id": goal["id"], "amount_cny": "8000"}]})
+    saved = client.put("/funding/allocations", json={"allocations": [{"asset_key": key, "goal_id": goal["id"], "amount_cny": "9000"}]})
     assert saved.status_code == 200, saved.text
-    assert saved.json()["free_net_worth_cny"] == "1000.00"
+    assert saved.json()["free_net_worth_cny"] == "0.00"
+    assert saved.json()["goals"][0]["completion_status"] == "AWAITING_CONFIRMATION"
+    completed_goal = client.get("/goals").json()[0]
+    assert completed_goal["completion_status"] == "AWAITING_CONFIRMATION"
+    assert client.get("/auth/me").json()["pending_goal_completions"] == [{"id": goal["id"], "name": "买车"}]
+    notices = client.get("/notifications").json()
+    assert notices[0]["title"] == "您的买车理财目标已完成，请前往确认！"
+    assert notices[0]["goal_id"] == goal["id"]
+
+    confirmed_goal = client.post(f"/goals/{goal['id']}/completion/confirm")
+    assert confirmed_goal.status_code == 200, confirmed_goal.text
+    assert confirmed_goal.json()["completion_status"] == "CONFIRMED"
+    assert confirmed_goal.json()["completion_confirmed_at"] is not None
+    assert client.get("/auth/me").json()["pending_goal_completions"] == []
+
+    upgraded_goal = client.patch(f"/goals/{goal['id']}", json={
+        "name": "买车升级版", "goal_type": "NET_WORTH", "target_cny": 12000,
+        "due_date": None, "included_asset_types": [],
+    })
+    assert upgraded_goal.status_code == 200, upgraded_goal.text
+    assert upgraded_goal.json()["completion_status"] == "IN_PROGRESS"
+    assert upgraded_goal.json()["gap_cny"] == "3000.00"
     constitution = client.get("/constitution")
     assert constitution.status_code == 200
     assert len(constitution.json()["rules"]) == 7
@@ -339,3 +387,7 @@ def test_live_physical_gold_funding_guard_constitution_and_product_xray(client: 
     assert xray.status_code == 200, xray.text
     assert xray.json()["original_file_stored"] is False
     assert xray.json()["extraction"]["principal_guaranteed"]["value"] == "NO"
+    deleted_goal = client.delete(f"/goals/{goal['id']}")
+    assert deleted_goal.status_code == 200, deleted_goal.text
+    assert client.get("/goals").json() == []
+    assert client.get("/funding/map").json()["free_net_worth_cny"] == "9000.00"

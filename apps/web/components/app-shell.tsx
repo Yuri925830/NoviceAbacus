@@ -8,6 +8,7 @@ import {
   Bot,
   CalendarCheck,
   ChartCandlestick,
+  CircleCheck,
   CircleUserRound,
   Database,
   Eye,
@@ -79,6 +80,19 @@ export function Protected({ children }: { children: React.ReactNode }) {
       .catch(() => router.replace("/login"))
       .finally(() => setLoading(false));
   }, [router]);
+  useEffect(() => {
+    const onGoalConfirmed = (event: Event) => {
+      const goalId = (event as CustomEvent<{ goalId: string }>).detail?.goalId;
+      if (!goalId) return;
+      setMe((current) => current ? {
+        ...current,
+        unread_notifications: Math.max(current.unread_notifications - 1, 0),
+        pending_goal_completions: current.pending_goal_completions.filter((goal) => goal.id !== goalId),
+      } : current);
+    };
+    window.addEventListener("goal-completion-confirmed", onGoalConfirmed);
+    return () => window.removeEventListener("goal-completion-confirmed", onGoalConfirmed);
+  }, []);
   if (loading)
     return (
       <div className="app-loading">
@@ -192,7 +206,7 @@ function AppShell({ children, me }: { children: React.ReactNode; me: Me }) {
               {hidden ? <Eye size={18} /> : <EyeOff size={18} />}
               <span>{hidden ? "显示金额" : "隐藏金额"}</span>
             </button>
-            <Link className="notification-button" href="/data" title="通知">
+            <Link className="notification-button" href={me.pending_goal_completions?.[0] ? `/goals?goal=${me.pending_goal_completions[0].id}` : "/data"} title={me.pending_goal_completions?.length ? "有理财目标等待确认" : "通知"}>
               <Bell size={19} />
               {me.unread_notifications > 0 ? (
                 <b>{Math.min(me.unread_notifications, 99)}</b>
@@ -211,6 +225,13 @@ function AppShell({ children, me }: { children: React.ReactNode; me: Me }) {
           </div>
         </header>
         <div className="page-wrap">
+          {me.pending_goal_completions?.map((goal) => (
+            <div className="goal-completion-global-banner" key={goal.id}>
+              <CircleCheck />
+              <div><strong>您的{goal.name}理财目标已完成，请前往确认！</strong><span>确认以后，怀特会和你一起庆祝这个里程碑。</span></div>
+              <Link href={`/goals?goal=${goal.id}`}>前往确认</Link>
+            </div>
+          ))}
           {me.security_setup_required ? (
             <div className="security-banner">
               <ShieldCheck />

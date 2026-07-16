@@ -28,6 +28,18 @@ export type AgentReply = {
   result: AgentResult;
 };
 
+export function actionItemPayload(item: AgentRecommendation, source: string) {
+  return {
+    title: item.action,
+    reason: item.reason,
+    expected_impact: item.expected_impact,
+    risk: item.risk,
+    review_trigger: item.review_trigger,
+    priority: item.priority,
+    source,
+  };
+}
+
 export const emptyAgentResult = (): AgentResult => ({
   executive_summary: "",
   confirmed_facts: [],

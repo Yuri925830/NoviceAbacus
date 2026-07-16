@@ -125,7 +125,7 @@ function ClearingContent() {
     };
   }, [session]);
   async function recognize(blob: Blob, name: string) {
-    if (!session) return;
+    if (!session) return false;
     setRecognizing(true);
     setRecognitionState("reading");
     setMessage("");
@@ -159,9 +159,11 @@ function ClearingContent() {
           "图片已经看完了，这次没有找到清楚的资产金额。换一张更清晰的图，或者手工记下来都可以。",
         );
       }
+      return true;
     } catch (e) {
       setRecognitionState("error");
       setError(errorMessage(e));
+      return false;
     } finally {
       setRecognizing(false);
     }

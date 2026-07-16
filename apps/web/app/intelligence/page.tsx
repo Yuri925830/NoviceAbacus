@@ -3,7 +3,7 @@
 import { Protected } from "@/components/app-shell";
 import { Badge, Button, Card, Empty, Field, Skeleton } from "@/components/ui";
 import { api, errorMessage, money } from "@/lib/api";
-import type { AgentReply, AgentRecommendation } from "@/lib/agent";
+import { actionItemPayload, type AgentReply, type AgentRecommendation } from "@/lib/agent";
 import { Activity, BookmarkCheck, BrainCircuit, Check, CircleAlert, Gauge, ListChecks, Orbit, Pause, Play, Sparkles, Target, Trash2 } from "lucide-react";
 import { FormEvent, useEffect, useState } from "react";
 
@@ -22,7 +22,7 @@ function IntelligenceContent() {
   async function load() { try { const data = await api<Overview>("/intelligence/overview"); setOverview(data); if (data.cashflow_source) setBudget((current) => ({ ...current, ...data.cashflow_source })); } catch (e) { setError(errorMessage(e)); } finally { setLoading(false); } }
   useEffect(() => { load(); }, []);
   async function allocate(e: FormEvent) { e.preventDefault(); setPlanning(true); setError(""); try { setResult(await api<AllocationResult>("/intelligence/allocate", { method: "POST", body: JSON.stringify({ ...budget, monthly_safety_buffer_cny: budget.monthly_safety_buffer_cny || "0", depth: "complex" }) })); setSaved([]); } catch (e) { setError(errorMessage(e)); } finally { setPlanning(false); } }
-  async function saveRecommendation(item: AgentRecommendation, index: number) { await api("/intelligence/actions", { method: "POST", body: JSON.stringify({ ...item, title: item.action, source: "DECISION_STUDIO" }) }); setSaved((current) => [...current, index]); await load(); }
+  async function saveRecommendation(item: AgentRecommendation, index: number) { setError(""); try { await api("/intelligence/actions", { method: "POST", body: JSON.stringify(actionItemPayload(item, "DECISION_STUDIO")) }); setSaved((current) => [...current, index]); await load(); } catch (e) { setError(errorMessage(e)); } }
   async function updateAction(id: string, status: string) { await api(`/intelligence/actions/${id}`, { method: "PATCH", body: JSON.stringify({ status }) }); await load(); }
   async function removeAction(id: string) { await api(`/intelligence/actions/${id}`, { method: "DELETE" }); await load(); }
   if (loading) return <><div className="page-head"><div><div className="eyebrow">WHITE FINANCIAL TWIN</div><h1>怀特决策舱</h1></div></div><Skeleton height={560} /></>;

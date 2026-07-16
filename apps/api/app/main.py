@@ -18,7 +18,7 @@ from email.message import EmailMessage
 from fastapi import Cookie, Depends, FastAPI, File, Form, Header, HTTPException, Request, Response, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from sqlalchemy import delete, desc, func, or_, select
+from sqlalchemy import delete, desc, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from .backups import backup_path, create_encrypted_backup, restore_encrypted_backup
@@ -353,11 +353,13 @@ def logout(response: Response, db: DB, user: Owner, xbs_refresh: str | None = Co
 
 @app.get("/auth/me")
 def me(user: Owner, db: DB) -> dict:
+    pending_goals = sync_goal_completion_notifications(db, user.id)
     return {
         "id": user.id, "email": user.email, "phone": user.phone, "role": user.role,
         "totp_enabled": user.totp_enabled, "security_setup_required": not user.totp_enabled,
         "region": user.region, "model_preference": user.model_preference, "timezone": user.timezone,
         "unread_notifications": db.scalar(select(func.count(Notification.id)).where(Notification.user_id == user.id, Notification.read_at.is_(None))) or 0,
+        "pending_goal_completions": pending_goals,
     }
 
 
@@ -803,6 +805,73 @@ def latest_confirmed(db: Session, user_id: str) -> ClearingSession | None:
     ).order_by(desc(ClearingSession.confirmed_at)).limit(1))
 
 
+def goal_completion_prefix(goal: Goal) -> str:
+    return f"GC:{goal.id.replace('-', '')[:16]}:"
+
+
+def goal_completion_kind(goal: Goal) -> str:
+    target = format(D(goal.target_cny).quantize(Decimal("0.01")), "f")
+    digest = hashlib.sha256(f"{goal.id}:{target}".encode("utf-8")).hexdigest()[:12]
+    return f"{goal_completion_prefix(goal)}{digest}"
+
+
+def goal_completion_state(db: Session, goal: Goal, current: Decimal | None = None) -> dict:
+    if current is None:
+        current = D(db.scalar(select(func.coalesce(func.sum(GoalFundingAllocation.amount_cny), 0)).where(
+            GoalFundingAllocation.user_id == goal.user_id,
+            GoalFundingAllocation.goal_id == goal.id,
+        )))
+    if current < D(goal.target_cny):
+        return {"completion_status": "IN_PROGRESS", "completion_confirmed_at": None}
+    notice = db.scalar(select(Notification).where(
+        Notification.user_id == goal.user_id,
+        Notification.kind == goal_completion_kind(goal),
+    ))
+    return {
+        "completion_status": "CONFIRMED" if notice and notice.read_at else "AWAITING_CONFIRMATION",
+        "completion_confirmed_at": iso(notice.read_at) if notice else None,
+    }
+
+
+def sync_goal_completion_notifications(db: Session, user_id: str, *, commit: bool = True) -> list[dict]:
+    goals = db.scalars(select(Goal).where(Goal.user_id == user_id).order_by(Goal.created_at)).all()
+    pending: list[dict] = []
+    changed = False
+    for goal in goals:
+        current = D(db.scalar(select(func.coalesce(func.sum(GoalFundingAllocation.amount_cny), 0)).where(
+            GoalFundingAllocation.user_id == user_id,
+            GoalFundingAllocation.goal_id == goal.id,
+        )))
+        kind = goal_completion_kind(goal)
+        notice = db.scalar(select(Notification).where(Notification.user_id == user_id, Notification.kind == kind))
+        if current >= D(goal.target_cny):
+            title = f"您的{goal.name}理财目标已完成，请前往确认！"
+            body = f"已归属 {money(current)} 元，达到目标金额 {money(D(goal.target_cny))} 元。确认后一起庆祝这个里程碑。"
+            if not notice:
+                notice = Notification(
+                    user_id=user_id,
+                    kind=kind,
+                    title=title,
+                    body=body,
+                )
+                db.add(notice)
+                changed = True
+            elif not notice.read_at and (notice.title != title or notice.body != body):
+                notice.title = title
+                notice.body = body
+                changed = True
+            if not notice.read_at:
+                pending.append({"id": goal.id, "name": goal.name})
+        elif notice and not notice.read_at:
+            db.delete(notice)
+            changed = True
+    if changed:
+        db.flush()
+        if commit:
+            db.commit()
+    return pending
+
+
 def goal_progress(goal: Goal, latest: ClearingSession | None, db: Session) -> dict:
     current = D(db.scalar(select(func.coalesce(func.sum(GoalFundingAllocation.amount_cny), 0)).where(
         GoalFundingAllocation.user_id == goal.user_id,
@@ -854,6 +923,7 @@ def serialize_goal_plan(plan: GoalPlan | None) -> dict | None:
 
 def goal_payload(db: Session, goal: Goal, latest: ClearingSession | None) -> dict:
     plan = db.scalar(select(GoalPlan).where(GoalPlan.goal_id == goal.id, GoalPlan.user_id == goal.user_id))
+    progress = goal_progress(goal, latest, db)
     return {
         "id": goal.id,
         "name": goal.name,
@@ -861,7 +931,8 @@ def goal_payload(db: Session, goal: Goal, latest: ClearingSession | None) -> dic
         "target_cny": money(D(goal.target_cny)),
         "due_date": iso(goal.due_date),
         "included_asset_types": goal.included_asset_types or [],
-        **goal_progress(goal, latest, db),
+        **progress,
+        **goal_completion_state(db, goal, D(progress["current_cny"])),
         "plan": serialize_goal_plan(plan),
     }
 
@@ -1932,6 +2003,7 @@ def create_goal_record(body: GoalInput, user: Owner, db: DB) -> dict:
 
 @app.get("/goals")
 def list_goals(user: Owner, db: DB) -> list[dict]:
+    sync_goal_completion_notifications(db, user.id)
     latest = latest_confirmed(db, user.id)
     return [goal_payload(db, row, latest) for row in db.scalars(select(Goal).where(Goal.user_id == user.id).order_by(Goal.created_at)).all()]
 
@@ -1941,6 +2013,7 @@ def get_goal_record(goal_id: str, user: Owner, db: DB) -> dict:
     row = db.scalar(select(Goal).where(Goal.id == goal_id, Goal.user_id == user.id))
     if not row:
         raise HTTPException(status_code=404, detail="没有找到这个目标")
+    sync_goal_completion_notifications(db, user.id)
     return goal_payload(db, row, latest_confirmed(db, user.id))
 
 
@@ -1949,15 +2022,49 @@ def update_goal_record(goal_id: str, body: GoalUpdate, user: Owner, db: DB) -> d
     row = db.scalar(select(Goal).where(Goal.id == goal_id, Goal.user_id == user.id))
     if not row:
         raise HTTPException(status_code=404, detail="没有找到这个目标")
+    previous_kind = goal_completion_kind(row)
     row.name = body.name.strip()
     row.goal_type = body.goal_type.upper()
     row.target_cny = body.target_cny
     row.due_date = body.due_date
     row.included_asset_types = [item.upper() for item in body.included_asset_types] if row.goal_type == "SPECIFIC" else []
+    if previous_kind != goal_completion_kind(row):
+        db.execute(delete(Notification).where(
+            Notification.user_id == user.id,
+            Notification.kind == previous_kind,
+            Notification.read_at.is_(None),
+        ))
+    db.flush()
+    sync_goal_completion_notifications(db, user.id, commit=False)
     log_event(db, user.id, "GOAL_UPDATED", {"goal_id": row.id})
     db.commit()
     db.refresh(row)
     return goal_payload(db, row, latest_confirmed(db, user.id))
+
+
+@app.post("/goals/{goal_id}/completion/confirm")
+def confirm_goal_completion(goal_id: str, user: Owner, db: DB) -> dict:
+    goal = db.scalar(select(Goal).where(Goal.id == goal_id, Goal.user_id == user.id))
+    if not goal:
+        raise HTTPException(status_code=404, detail="没有找到这个目标")
+    progress = goal_progress(goal, latest_confirmed(db, user.id), db)
+    if D(progress["current_cny"]) < D(goal.target_cny):
+        raise HTTPException(status_code=409, detail="这个目标当前还没有达到目标金额，请刷新后再确认。")
+    kind = goal_completion_kind(goal)
+    notice = db.scalar(select(Notification).where(Notification.user_id == user.id, Notification.kind == kind))
+    if not notice:
+        notice = Notification(
+            user_id=user.id,
+            kind=kind,
+            title=f"您的{goal.name}理财目标已完成，请前往确认！",
+            body=f"已归属 {progress['current_cny']} 元，达到目标金额 {money(D(goal.target_cny))} 元。",
+        )
+        db.add(notice)
+    if not notice.read_at:
+        notice.read_at = utcnow()
+        log_event(db, user.id, "GOAL_COMPLETION_CONFIRMED", {"goal_id": goal.id, "target_cny": money(D(goal.target_cny))})
+    db.commit()
+    return goal_payload(db, goal, latest_confirmed(db, user.id))
 
 
 @app.post("/goals/{goal_id}/plan")
@@ -2089,6 +2196,13 @@ def delete_goal_record(goal_id: str, user: Owner, db: DB) -> dict:
     if not row:
         raise HTTPException(status_code=404, detail="目标不存在")
     db.execute(delete(GoalPlan).where(GoalPlan.goal_id == row.id, GoalPlan.user_id == user.id))
+    db.execute(delete(GoalFundingAllocation).where(GoalFundingAllocation.goal_id == row.id, GoalFundingAllocation.user_id == user.id))
+    db.execute(update(ActionItem).where(ActionItem.goal_id == row.id, ActionItem.user_id == user.id).values(goal_id=None))
+    db.execute(update(FutureObligation).where(FutureObligation.goal_id == row.id, FutureObligation.user_id == user.id).values(goal_id=None))
+    db.execute(delete(Notification).where(
+        Notification.user_id == user.id,
+        Notification.kind.like(f"{goal_completion_prefix(row)}%"),
+    ))
     db.delete(row)
     db.commit()
     return {"ok": True}
@@ -2162,6 +2276,7 @@ def get_funding_map(user: Owner, db: DB) -> dict:
                 "target_cny": money(D(goal.target_cny)),
                 "allocated_cny": money(allocation_by_goal.get(goal.id, D(0))),
                 "due_date": iso(goal.due_date),
+                **goal_completion_state(db, goal, allocation_by_goal.get(goal.id, D(0))),
             }
             for goal in goals
         ],
@@ -2186,20 +2301,15 @@ def replace_funding_allocations(body: FundingAllocationInput, user: Owner, db: D
     }
     goals = {goal.id: goal for goal in db.scalars(select(Goal).where(Goal.user_id == user.id)).all()}
     by_asset: dict[str, Decimal] = {}
-    by_goal: dict[str, Decimal] = {}
     for item in body.allocations:
         if item.asset_key not in asset_values:
             raise HTTPException(status_code=422, detail="有一项资金已经不在最新资产清算中，请刷新后再分配。")
         if item.goal_id not in goals:
             raise HTTPException(status_code=422, detail="有一个目标已经不存在，请刷新后再分配。")
         by_asset[item.asset_key] = by_asset.get(item.asset_key, D(0)) + D(item.amount_cny)
-        by_goal[item.goal_id] = by_goal.get(item.goal_id, D(0)) + D(item.amount_cny)
     for key, amount in by_asset.items():
         if amount > asset_values[key]:
             raise HTTPException(status_code=422, detail=f"同一笔资金不能重复使用：某项资产只有 {money(asset_values[key])} 元，却分配了 {money(amount)} 元。")
-    for goal_id, amount in by_goal.items():
-        if amount > D(goals[goal_id].target_cny):
-            raise HTTPException(status_code=422, detail=f"“{goals[goal_id].name}”分配金额超过了目标金额。")
     db.execute(delete(GoalFundingAllocation).where(GoalFundingAllocation.user_id == user.id))
     for item in body.allocations:
         if D(item.amount_cny) <= 0:
@@ -2210,6 +2320,8 @@ def replace_funding_allocations(body: FundingAllocationInput, user: Owner, db: D
             asset_key=item.asset_key,
             amount_cny=item.amount_cny,
         ))
+    db.flush()
+    sync_goal_completion_notifications(db, user.id, commit=False)
     log_event(db, user.id, "GOAL_FUNDING_REPLACED", {"allocation_count": len(body.allocations)})
     db.commit()
     return get_funding_map(user, db)
@@ -2993,8 +3105,11 @@ def update_schedule(body: ScheduleInput, user: Owner, db: DB) -> dict:
 
 @app.get("/notifications")
 def notifications(user: Owner, db: DB) -> list[dict]:
+    sync_goal_completion_notifications(db, user.id)
+    goals = db.scalars(select(Goal).where(Goal.user_id == user.id)).all()
+    goal_by_kind = {goal_completion_kind(goal): goal.id for goal in goals}
     rows = db.scalars(select(Notification).where(Notification.user_id == user.id).order_by(desc(Notification.created_at)).limit(100)).all()
-    return [{"id": row.id, "kind": row.kind, "title": row.title, "body": row.body, "read_at": iso(row.read_at), "created_at": iso(row.created_at)} for row in rows]
+    return [{"id": row.id, "kind": row.kind, "title": row.title, "body": row.body, "goal_id": goal_by_kind.get(row.kind), "read_at": iso(row.read_at), "created_at": iso(row.created_at)} for row in rows]
 
 
 @app.post("/notifications/{notification_id}/read")
