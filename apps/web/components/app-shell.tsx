@@ -87,7 +87,7 @@ export function Protected({ children }: { children: React.ReactNode }) {
       setMe((current) => current ? {
         ...current,
         unread_notifications: Math.max(current.unread_notifications - 1, 0),
-        pending_goal_completions: current.pending_goal_completions.filter((goal) => goal.id !== goalId),
+        pending_goal_completions: (current.pending_goal_completions || []).filter((goal) => goal.id !== goalId),
       } : current);
     };
     window.addEventListener("goal-completion-confirmed", onGoalConfirmed);

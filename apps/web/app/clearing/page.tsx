@@ -14,7 +14,6 @@ import { api, ApiError, errorMessage, money } from "@/lib/api";
 import type { AssetItem, ClearingSession } from "@/lib/types";
 import {
   AlertTriangle,
-  ArrowRight,
   Check,
   CheckCircle2,
   CircleDollarSign,
@@ -207,11 +206,16 @@ function ClearingContent() {
   }
   async function setStatus(item: AssetItem, status: string) {
     if (!session) return;
-    await api(`/sessions/${session.id}/items/${item.id}`, {
-      method: "PATCH",
-      body: JSON.stringify({ status }),
-    });
-    await refresh();
+    setError("");
+    try {
+      await api(`/sessions/${session.id}/items/${item.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ status }),
+      });
+      await refresh();
+    } catch (e) {
+      setError(errorMessage(e));
+    }
   }
   function beginEdit(item: AssetItem) {
     setEditingItem(item);
@@ -260,8 +264,13 @@ function ClearingContent() {
   }
   async function remove(item: AssetItem) {
     if (!session || !confirm("确定删除这个候选项？")) return;
-    await api(`/sessions/${session.id}/items/${item.id}`, { method: "DELETE" });
-    await refresh();
+    setError("");
+    try {
+      await api(`/sessions/${session.id}/items/${item.id}`, { method: "DELETE" });
+      await refresh();
+    } catch (e) {
+      setError(errorMessage(e));
+    }
   }
   async function confirmSession(acceptStale = false) {
     if (!session) return;
@@ -279,6 +288,7 @@ function ClearingContent() {
         },
       );
       setSession(result);
+      window.dispatchEvent(new CustomEvent("funding-assets-changed", { detail: { snapshotId: result.id } }));
       setMessage("这次清算已经收好啦。新的资产快照和趋势也一起更新好了。");
     } catch (e) {
       if (

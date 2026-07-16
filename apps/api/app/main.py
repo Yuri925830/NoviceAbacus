@@ -169,13 +169,17 @@ def next_schedule_time(value: ScheduleInput, after: datetime | None = None) -> d
         candidate += timedelta(days=(weekday - candidate.weekday()) % 7)
         if candidate <= now:
             candidate += timedelta(days=7)
-    elif value.frequency == "CUSTOM" and value.custom_date:
+    elif value.frequency == "CUSTOM":
+        if not value.custom_date:
+            raise HTTPException(status_code=422, detail="请选择单次清算日期")
         candidate = datetime.combine(value.custom_date, datetime.min.time(), tzinfo=local_tz).replace(hour=value.hour, minute=value.minute)
         if candidate <= now:
             raise HTTPException(status_code=422, detail="自定义清算时间必须晚于当前时间")
     elif value.frequency == "YEARLY":
-        month = value.custom_date.month if value.custom_date else 12
-        day = min((value.custom_date.day if value.custom_date else value.day_of_month) or 31, calendar.monthrange(candidate.year, month)[1])
+        if not value.custom_date:
+            raise HTTPException(status_code=422, detail="请选择年度清算的月和日")
+        month = value.custom_date.month
+        day = min(value.custom_date.day, calendar.monthrange(candidate.year, month)[1])
         candidate = candidate.replace(month=month, day=day)
         if candidate <= now:
             year = candidate.year + 1
@@ -353,6 +357,7 @@ def logout(response: Response, db: DB, user: Owner, xbs_refresh: str | None = Co
 
 @app.get("/auth/me")
 def me(user: Owner, db: DB) -> dict:
+    reconcile_funding_allocations(db, user.id, latest_confirmed(db, user.id))
     pending_goals = sync_goal_completion_notifications(db, user.id)
     return {
         "id": user.id, "email": user.email, "phone": user.phone, "role": user.role,
@@ -720,6 +725,8 @@ async def confirm_session(session_id: str, body: ConfirmRequest, user: Owner, db
             schedule.next_run_at = next_schedule_time(schedule_input_from_row(schedule), after=now + timedelta(minutes=1))
     log_event(db, user.id, "CLEARING_CONFIRMED", {"session_id": session.id, "revision": session.revision_number, "completeness": str(session.completeness)})
     db.commit()
+    reconcile_funding_allocations(db, user.id, session)
+    sync_goal_completion_notifications(db, user.id)
     db.refresh(session)
     return serialize_session(session, with_items=True)
 
@@ -1195,6 +1202,93 @@ def stable_asset_key(item: AssetItem) -> str:
     return hashlib.sha256(identity.encode("utf-8")).hexdigest()
 
 
+def funding_asset_lineage(db: Session, item: AssetItem) -> list[AssetItem]:
+    lineage = [item]
+    seen = {item.id}
+    current = item
+    while True:
+        metadata = current.metadata_json or {}
+        previous_id = metadata.get("carried_from_item") or metadata.get("copied_from_item")
+        if not previous_id or str(previous_id) in seen:
+            break
+        previous = db.get(AssetItem, str(previous_id))
+        if not previous:
+            break
+        lineage.append(previous)
+        seen.add(previous.id)
+        current = previous
+    return lineage
+
+
+def funding_asset_key(db: Session, item: AssetItem) -> str:
+    root = funding_asset_lineage(db, item)[-1]
+    return hashlib.sha256(f"funding-asset:{root.id}".encode("utf-8")).hexdigest()
+
+
+def funding_cents(value) -> Decimal:
+    return D(money(D(value)))
+
+
+def current_funding_assets(db: Session, latest: ClearingSession | None) -> tuple[dict[str, AssetItem], dict[str, str]]:
+    assets: dict[str, AssetItem] = {}
+    alias_candidates: dict[str, set[str]] = {}
+    if not latest:
+        return assets, {}
+    for item in latest.items:
+        if item.status not in {"CONFIRMED", "REVISED"} or item.is_liability:
+            continue
+        key = funding_asset_key(db, item)
+        assets[key] = item
+        aliases = {stable_asset_key(member) for member in funding_asset_lineage(db, item)}
+        for alias in aliases:
+            alias_candidates.setdefault(alias, set()).add(key)
+    # Legacy identity keys may collide. Only migrate aliases that identify one
+    # current asset unambiguously; the new lineage keys are always unique.
+    aliases = {alias: next(iter(keys)) for alias, keys in alias_candidates.items() if len(keys) == 1}
+    return assets, aliases
+
+
+def reconcile_funding_allocations(db: Session, user_id: str, latest: ClearingSession | None) -> list[GoalFundingAllocation]:
+    assets, aliases = current_funding_assets(db, latest)
+    goals = set(db.scalars(select(Goal.id).where(Goal.user_id == user_id)).all())
+    rows = db.scalars(select(GoalFundingAllocation).where(GoalFundingAllocation.user_id == user_id).order_by(GoalFundingAllocation.created_at, GoalFundingAllocation.id)).all()
+    previous_count = len(rows)
+    normalized: dict[tuple[str, str], Decimal] = {}
+    changed = False
+    for row in rows:
+        current_key = row.asset_key if row.asset_key in assets else aliases.get(row.asset_key)
+        if not current_key or row.goal_id not in goals:
+            changed = True
+            continue
+        if current_key != row.asset_key:
+            changed = True
+        pair = (current_key, row.goal_id)
+        normalized[pair] = normalized.get(pair, D(0)) + funding_cents(row.amount_cny)
+    remaining_by_asset = {key: funding_cents(item.value_cny) for key, item in assets.items()}
+    capped: dict[tuple[str, str], Decimal] = {}
+    for (asset_key, goal_id), amount in normalized.items():
+        remaining = remaining_by_asset.get(asset_key, D(0))
+        accepted = min(amount, remaining)
+        if accepted != amount:
+            changed = True
+        if accepted > 0:
+            capped[(asset_key, goal_id)] = accepted
+            remaining_by_asset[asset_key] = remaining - accepted
+    normalized = capped
+    if len(normalized) != len(rows):
+        changed = True
+    if changed:
+        db.execute(delete(GoalFundingAllocation).where(GoalFundingAllocation.user_id == user_id))
+        for (asset_key, goal_id), amount in normalized.items():
+            if amount > 0:
+                db.add(GoalFundingAllocation(user_id=user_id, asset_key=asset_key, goal_id=goal_id, amount_cny=amount))
+        db.flush()
+        rows = db.scalars(select(GoalFundingAllocation).where(GoalFundingAllocation.user_id == user_id)).all()
+        log_event(db, user_id, "FUNDING_ALLOCATIONS_RECONCILED", {"before": previous_count, "after": len(rows)})
+        db.commit()
+    return rows
+
+
 def build_attribution(db: Session, session: ClearingSession, answers: list[dict] | None = None) -> dict:
     previous = db.scalar(select(ClearingSession).where(
         ClearingSession.user_id == session.user_id,
@@ -1604,12 +1698,12 @@ def build_spending_snapshot(db: Session, user_id: str, purchase_amount: Decimal 
         for item in confirmed_items
         if item.asset_type in {"CASH", "FIXED_DEPOSIT"} and item.liquidity_level in {"HIGH", "MEDIUM"}
     ), D(0))
-    allocations = db.scalars(select(GoalFundingAllocation).where(GoalFundingAllocation.user_id == user_id)).all()
+    allocations = reconcile_funding_allocations(db, user_id, latest)
     allocated_by_asset: dict[str, Decimal] = {}
     for allocation in allocations:
         allocated_by_asset[allocation.asset_key] = allocated_by_asset.get(allocation.asset_key, D(0)) + D(allocation.amount_cny)
     committed_liquid = sum((
-        min(D(item.value_cny), allocated_by_asset.get(stable_asset_key(item), D(0)))
+        min(D(item.value_cny), allocated_by_asset.get(funding_asset_key(db, item), D(0)))
         for item in confirmed_items
         if item.liquidity_level == "HIGH"
     ), D(0))
@@ -2231,7 +2325,8 @@ def serialize_obligation(row: FutureObligation) -> dict:
 def get_funding_map(user: Owner, db: DB) -> dict:
     latest = latest_confirmed(db, user.id)
     goals = db.scalars(select(Goal).where(Goal.user_id == user.id).order_by(Goal.created_at)).all()
-    allocations = db.scalars(select(GoalFundingAllocation).where(GoalFundingAllocation.user_id == user.id)).all()
+    allocations = reconcile_funding_allocations(db, user.id, latest)
+    sync_goal_completion_notifications(db, user.id)
     allocation_by_asset: dict[str, Decimal] = {}
     allocation_by_goal: dict[str, Decimal] = {}
     for row in allocations:
@@ -2242,9 +2337,9 @@ def get_funding_map(user: Owner, db: DB) -> dict:
         for item in latest.items:
             if item.status not in {"CONFIRMED", "REVISED"} or item.is_liability:
                 continue
-            key = stable_asset_key(item)
-            value = D(item.value_cny)
-            committed = allocation_by_asset.get(key, D(0))
+            key = funding_asset_key(db, item)
+            value = funding_cents(item.value_cny)
+            committed = funding_cents(allocation_by_asset.get(key, D(0)))
             assets.append({
                 "asset_key": key,
                 "name": item.name,
@@ -2252,15 +2347,25 @@ def get_funding_map(user: Owner, db: DB) -> dict:
                 "asset_type": item.asset_type,
                 "value_cny": money(value),
                 "committed_cny": money(committed),
-                "free_cny": money(value - committed),
+                "free_cny": money(max(value - committed, D(0))),
             })
     obligations = db.scalars(select(FutureObligation).where(
         FutureObligation.user_id == user.id,
         FutureObligation.status == "UPCOMING",
     ).order_by(FutureObligation.due_date)).all()
     standalone_obligations = sum((D(row.amount_cny) for row in obligations if not row.goal_id), D(0))
-    committed = sum(allocation_by_asset.values(), D(0))
-    net_worth = D(latest.totals_json.get("net_worth_cny")) if latest else D(0)
+    committed = sum((funding_cents(value) for value in allocation_by_asset.values()), D(0))
+    net_worth = funding_cents(latest.totals_json.get("net_worth_cny")) if latest else D(0)
+    categories: dict[str, dict] = {}
+    for asset in assets:
+        group = categories.setdefault(asset["asset_type"], {
+            "asset_type": asset["asset_type"], "asset_count": 0,
+            "value_cny": D(0), "committed_cny": D(0), "free_cny": D(0),
+        })
+        group["asset_count"] += 1
+        group["value_cny"] += D(asset["value_cny"])
+        group["committed_cny"] += D(asset["committed_cny"])
+        group["free_cny"] += D(asset["free_cny"])
     return {
         "has_snapshot": latest is not None,
         "snapshot_id": latest.id if latest else None,
@@ -2269,6 +2374,7 @@ def get_funding_map(user: Owner, db: DB) -> dict:
         "standalone_obligations_cny": money(standalone_obligations),
         "free_net_worth_cny": money(net_worth - committed - standalone_obligations),
         "assets": assets,
+        "asset_categories": [{**group, "value_cny": money(group["value_cny"]), "committed_cny": money(group["committed_cny"]), "free_cny": money(group["free_cny"])} for group in categories.values()],
         "goals": [
             {
                 "id": goal.id,
@@ -2294,35 +2400,40 @@ def replace_funding_allocations(body: FundingAllocationInput, user: Owner, db: D
     latest = latest_confirmed(db, user.id)
     if not latest:
         raise HTTPException(status_code=409, detail="完成一次资产清算后，才能给真实资金安排归属。")
-    asset_values = {
-        stable_asset_key(item): D(item.value_cny)
-        for item in latest.items
-        if item.status in {"CONFIRMED", "REVISED"} and not item.is_liability
-    }
+    if body.snapshot_id and body.snapshot_id != latest.id:
+        raise HTTPException(status_code=409, detail="资产清算刚刚更新了，页面会载入最新资产后再请你确认归属。")
+    assets, legacy_aliases = current_funding_assets(db, latest)
+    asset_values = {key: funding_cents(item.value_cny) for key, item in assets.items()}
     goals = {goal.id: goal for goal in db.scalars(select(Goal).where(Goal.user_id == user.id)).all()}
     by_asset: dict[str, Decimal] = {}
+    normalized: dict[tuple[str, str], Decimal] = {}
     for item in body.allocations:
-        if item.asset_key not in asset_values:
-            raise HTTPException(status_code=422, detail="有一项资金已经不在最新资产清算中，请刷新后再分配。")
+        asset_key = item.asset_key if item.asset_key in asset_values else legacy_aliases.get(item.asset_key)
+        if not asset_key:
+            raise HTTPException(status_code=409, detail="这项资产来自较早的清算记录，页面会载入最新资产。请重新确认一次归属。")
         if item.goal_id not in goals:
-            raise HTTPException(status_code=422, detail="有一个目标已经不存在，请刷新后再分配。")
-        by_asset[item.asset_key] = by_asset.get(item.asset_key, D(0)) + D(item.amount_cny)
+            raise HTTPException(status_code=409, detail="选中的理财目标已经变化，页面会载入最新目标。请重新确认一次归属。")
+        amount = funding_cents(item.amount_cny)
+        pair = (asset_key, item.goal_id)
+        normalized[pair] = normalized.get(pair, D(0)) + amount
+        by_asset[asset_key] = by_asset.get(asset_key, D(0)) + amount
     for key, amount in by_asset.items():
         if amount > asset_values[key]:
-            raise HTTPException(status_code=422, detail=f"同一笔资金不能重复使用：某项资产只有 {money(asset_values[key])} 元，却分配了 {money(amount)} 元。")
+            asset = assets[key]
+            raise HTTPException(status_code=422, detail=f"“{asset.name}”最多可归属 {money(asset_values[key])} 元，当前合计为 {money(amount)} 元。请减少超出的部分。")
     db.execute(delete(GoalFundingAllocation).where(GoalFundingAllocation.user_id == user.id))
-    for item in body.allocations:
-        if D(item.amount_cny) <= 0:
+    for (asset_key, goal_id), amount in normalized.items():
+        if amount <= 0:
             continue
         db.add(GoalFundingAllocation(
             user_id=user.id,
-            goal_id=item.goal_id,
-            asset_key=item.asset_key,
-            amount_cny=item.amount_cny,
+            goal_id=goal_id,
+            asset_key=asset_key,
+            amount_cny=amount,
         ))
     db.flush()
     sync_goal_completion_notifications(db, user.id, commit=False)
-    log_event(db, user.id, "GOAL_FUNDING_REPLACED", {"allocation_count": len(body.allocations)})
+    log_event(db, user.id, "GOAL_FUNDING_REPLACED", {"allocation_count": len(normalized), "snapshot_id": latest.id})
     db.commit()
     return get_funding_map(user, db)
 

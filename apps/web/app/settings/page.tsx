@@ -4,7 +4,6 @@ import {
   Badge,
   Button,
   Card,
-  Empty,
   Field,
   Modal,
   Skeleton,
@@ -16,18 +15,17 @@ import {
   Copy,
   KeyRound,
   Laptop,
-  Mail,
   Plus,
   Save,
   Server,
   ShieldCheck,
   Smartphone,
   Sparkles,
-  Trash2,
   UserRoundCog,
   Vault,
 } from "lucide-react";
 import QRCode from "qrcode";
+import Image from "next/image";
 import { FormEvent, useEffect, useState } from "react";
 
 type Settings = {
@@ -109,6 +107,7 @@ function SettingsContent() {
       city: "",
     });
   async function load() {
+    setError("");
     try {
       const [s, d, q] = await Promise.all([
         api<Settings>("/settings"),
@@ -165,24 +164,38 @@ function SettingsContent() {
   }
   async function addQuote(e: FormEvent) {
     e.preventDefault();
-    await api("/gold/quotes", {
-      method: "POST",
-      body: JSON.stringify({
-        ...quote,
-        quoted_at: new Date(quote.quoted_at).toISOString(),
-        brand: quote.brand || null,
-        city: quote.city || null,
-      }),
-    });
-    setQuoteOpen(false);
-    setQuote({ ...quote, price_per_gram_cny: "", source: "" });
-    load();
+    setSaving(true);
+    setError("");
+    try {
+      await api("/gold/quotes", {
+        method: "POST",
+        body: JSON.stringify({
+          ...quote,
+          quoted_at: new Date(quote.quoted_at).toISOString(),
+          brand: quote.brand || null,
+          city: quote.city || null,
+        }),
+      });
+      setQuoteOpen(false);
+      setQuote((current) => ({ ...current, price_per_gram_cny: "", source: "" }));
+      await load();
+    } catch (e) {
+      setError(errorMessage(e));
+    } finally {
+      setSaving(false);
+    }
   }
   async function revoke(id: string) {
     if (!confirm("让这台设备立即退出？")) return;
-    await api(`/auth/devices/${id}`, { method: "DELETE" });
-    load();
+    setError("");
+    try {
+      await api(`/auth/devices/${id}`, { method: "DELETE" });
+      await load();
+    } catch (e) {
+      setError(errorMessage(e));
+    }
   }
+  if (!data && error) return <Card className="card-pad"><div className="inline-error">{error}</div><Button onClick={() => void load()}>重新加载</Button></Card>;
   if (!data)
     return (
       <>
@@ -659,7 +672,7 @@ function SettingsContent() {
             >
               取消
             </Button>
-            <Button type="submit">保存报价</Button>
+            <Button type="submit" loading={saving}>保存报价</Button>
           </div>
         </form>
       </Modal>
@@ -780,7 +793,7 @@ function TotpSetup() {
   if (setup)
     return (
       <div className="totp-setup">
-        <img src={qr} alt="TOTP 二维码" />
+        <Image src={qr} alt="TOTP 二维码" width={220} height={220} unoptimized />
         <div>
           <strong>用验证器扫描</strong>
           <p>用常用的验证器扫一扫就好；如果不方便扫描，也可以手工输入下面这串字符：</p>

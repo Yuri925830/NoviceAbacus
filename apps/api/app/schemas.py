@@ -196,6 +196,7 @@ class FundingAllocationRow(BaseModel):
 
 
 class FundingAllocationInput(BaseModel):
+    snapshot_id: str | None = None
     allocations: list[FundingAllocationRow] = Field(default_factory=list, max_length=500)
 
 

@@ -6,7 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint",
+    "lint": "eslint . --max-warnings=0",
     "typecheck": "tsc --noEmit",
     "e2e": "playwright test"
   },
@@ -23,7 +23,7 @@
     "@types/qrcode": "latest",
     "@types/react": "latest",
     "@types/react-dom": "latest",
-    "eslint": "latest",
+    "eslint": "9.39.5",
     "eslint-config-next": "latest",
     "prettier": "^3.9.5",
     "sharp": "^0.35.3",

@@ -2,18 +2,20 @@
 
 import { Protected } from "@/components/app-shell";
 import { Badge, Button, Card, Empty, Field, Modal, Skeleton } from "@/components/ui";
-import { api, errorMessage, formatDate, money, percent } from "@/lib/api";
-import { CalendarClock, CircleAlert, CircleCheck, Coins, LockKeyhole, Plus, Save, Sparkles, Trash2, Wallet } from "lucide-react";
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { api, ApiError, errorMessage, formatDate, money } from "@/lib/api";
+import { CalendarClock, ChevronDown, ChevronUp, CircleAlert, CircleCheck, Coins, Layers3, LockKeyhole, Plus, Save, Trash2, Wallet } from "lucide-react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 type FundingMap = {
   has_snapshot: boolean;
+  snapshot_id?: string | null;
   net_worth_cny: string;
   committed_to_goals_cny: string;
   standalone_obligations_cny: string;
   free_net_worth_cny: string;
   rule: string;
   assets: Array<{ asset_key: string; name: string; account_alias?: string; asset_type: string; value_cny: string; committed_cny: string; free_cny: string }>;
+  asset_categories: Array<{ asset_type: string; asset_count: number; value_cny: string; committed_cny: string; free_cny: string }>;
   goals: Array<{ id: string; name: string; target_cny: string; allocated_cny: string; due_date?: string; completion_status: "IN_PROGRESS" | "AWAITING_CONFIRMATION" | "CONFIRMED"; completion_confirmed_at?: string | null }>;
   allocations: Array<{ id: string; asset_key: string; goal_id: string; amount_cny: string }>;
   obligations: Array<{ id: string; goal_id?: string; title: string; category: string; amount_cny: string; due_date: string; likelihood: string; status: string; notes: string }>;
@@ -27,49 +29,108 @@ const categories = [
   ["WEDDING", "婚礼"], ["CAR", "买车"], ["FAMILY", "家庭支持"], ["LOAN", "贷款到期"], ["MEDICAL", "医疗支出"], ["OTHER", "其他"],
 ] as const;
 
+const assetTypeLabels: Record<string, string> = {
+  CASH: "现金",
+  FIXED_DEPOSIT: "定期存款",
+  STOCK: "股票",
+  FUND: "基金",
+  BOND: "债券",
+  GOLD: "黄金",
+  PHYSICAL_GOLD: "实物黄金",
+  PENSION: "公积金 / 养老金",
+  PROPERTY: "房产",
+  VEHICLE: "车辆",
+  LOAN_RECEIVABLE: "借出款 / 应收款",
+  OTHER: "其他资产",
+};
+
+function cents(value: string | number): number {
+  const amount = Number(value);
+  return Number.isFinite(amount) ? Math.round((amount + Number.EPSILON) * 100) / 100 : 0;
+}
+
 function FundingContent() {
   const [data, setData] = useState<FundingMap | null>(null);
   const [values, setValues] = useState<Record<string, string>>({});
   const [controls, setControls] = useState<Record<string, AllocationControl>>({});
+  const [categoryGoals, setCategoryGoals] = useState<Record<string, string>>({});
+  const [expandedTypes, setExpandedTypes] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [obligationOpen, setObligationOpen] = useState(false);
   const [obligation, setObligation] = useState({ title: "", category: "TUITION", amount_cny: "", due_date: "", likelihood: "CERTAIN", goal_id: "", notes: "" });
+  const currentMapRef = useRef<FundingMap | null>(null);
+  const allocationDraftDirtyRef = useRef(false);
 
-  function applyFundingMap(result: FundingMap) {
-    setData(result);
+  const applyFundingMap = useCallback((result: FundingMap) => {
+    const categoryRows = result.asset_categories || Object.values(result.assets.reduce<Record<string, FundingMap["asset_categories"][number]>>((groups, asset) => {
+      const group = groups[asset.asset_type] || { asset_type: asset.asset_type, asset_count: 0, value_cny: "0", committed_cny: "0", free_cny: "0" };
+      groups[asset.asset_type] = { ...group, asset_count: group.asset_count + 1, value_cny: String(cents(group.value_cny) + cents(asset.value_cny)), committed_cny: String(cents(group.committed_cny) + cents(asset.committed_cny)), free_cny: String(cents(group.free_cny) + cents(asset.free_cny)) };
+      return groups;
+    }, {}));
+    const normalizedResult = { ...result, asset_categories: categoryRows };
+    currentMapRef.current = normalizedResult;
+    allocationDraftDirtyRef.current = false;
+    setData(normalizedResult);
     setValues(Object.fromEntries(result.allocations.map((item) => [`${item.asset_key}|${item.goal_id}`, item.amount_cny])));
     setControls(Object.fromEntries(result.assets.map((asset) => {
       const assigned = result.allocations.filter((item) => item.asset_key === asset.asset_key);
       const first = assigned[0];
-      const isFull = assigned.length === 1 && Math.abs(Number(first.amount_cny) - Number(asset.value_cny)) < 0.005;
+      const isFull = assigned.length === 1 && cents(first.amount_cny) === cents(asset.value_cny);
       return [asset.asset_key, {
         goalId: first?.goal_id || result.goals[0]?.id || "",
         mode: isFull ? "FULL" : first ? "PARTIAL" : "",
       }];
     })));
-  }
+    setCategoryGoals((current) => Object.fromEntries(categoryRows.map((category) => {
+      const currentGoal = current[category.asset_type];
+      return [category.asset_type, result.goals.some((goal) => goal.id === currentGoal) ? currentGoal : result.goals[0]?.id || ""];
+    })));
+  }, []);
 
-  async function load() {
+  const load = useCallback(async (preserveSameSnapshotDraft = false): Promise<boolean> => {
     try {
       const result = await api<FundingMap>("/funding/map");
+      const previousSnapshotId = currentMapRef.current?.snapshot_id;
+      if (preserveSameSnapshotDraft && allocationDraftDirtyRef.current && previousSnapshotId === result.snapshot_id) {
+        return true;
+      }
       applyFundingMap(result);
+      setError(previousSnapshotId && previousSnapshotId !== result.snapshot_id
+        ? "检测到最新资产清算，资产列表已实时更新；旧清算中的未保存归属没有带入。"
+        : "");
+      return true;
     } catch (e) {
       setError(errorMessage(e));
+      return false;
     } finally {
       setLoading(false);
     }
-  }
-  useEffect(() => { load(); }, []);
+  }, [applyFundingMap]);
+  useEffect(() => {
+    void load();
+    const refresh = () => { if (document.visibilityState === "visible") void load(true); };
+    const onFundingChanged = () => { void load(); };
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    window.addEventListener("funding-assets-changed", onFundingChanged);
+    return () => {
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", refresh);
+      window.removeEventListener("funding-assets-changed", onFundingChanged);
+    };
+  }, [load]);
 
   const drafts = useMemo(() => Object.entries(values).map(([key, value]) => [key, value.trim().replace(/[,，\s]/g, "")] as const).filter(([, value]) => Number(value) > 0).map(([key, amount_cny]) => {
     const [asset_key, goal_id] = key.split("|");
     return { asset_key, goal_id, amount_cny };
   }), [values]);
   const draftGoalTotals = useMemo(() => Object.fromEntries((data?.goals || []).map((goal) => [goal.id, drafts.filter((item) => item.goal_id === goal.id).reduce((sum, item) => sum + Number(item.amount_cny), 0)])), [data?.goals, drafts]);
+  const assetsByType = useMemo(() => Object.fromEntries((data?.asset_categories || []).map((category) => [category.asset_type, (data?.assets || []).filter((asset) => asset.asset_type === category.asset_type)])), [data]);
 
   function replaceAssetAllocation(assetKey: string, goalId: string, amount: string) {
+    allocationDraftDirtyRef.current = true;
     setValues((current) => {
       const next = Object.fromEntries(Object.entries(current).filter(([key]) => !key.startsWith(`${assetKey}|`)));
       if (amount) next[`${assetKey}|${goalId}`] = amount;
@@ -92,7 +153,7 @@ function FundingContent() {
     const goalId = controls[asset.asset_key]?.goalId || data?.goals[0]?.id || "";
     if (!goalId) return;
     const currentValue = values[`${asset.asset_key}|${goalId}`] || "";
-    const amount = Number(currentValue) > 0 && Number(currentValue) < Number(asset.value_cny) ? currentValue : "";
+    const amount = cents(currentValue) > 0 && cents(currentValue) < cents(asset.value_cny) ? currentValue : "";
     replaceAssetAllocation(asset.asset_key, goalId, amount);
     setControls((current) => ({ ...current, [asset.asset_key]: { goalId, mode: "PARTIAL" } }));
   }
@@ -100,6 +161,36 @@ function FundingContent() {
   function clearAssetAllocation(assetKey: string) {
     replaceAssetAllocation(assetKey, "", "");
     setControls((current) => ({ ...current, [assetKey]: { goalId: current[assetKey]?.goalId || data?.goals[0]?.id || "", mode: "" } }));
+  }
+
+  function allocateCategoryFull(assetType: string) {
+    const goalId = categoryGoals[assetType] || data?.goals[0]?.id || "";
+    if (!goalId) return;
+    const categoryAssets = assetsByType[assetType] || [];
+    allocationDraftDirtyRef.current = true;
+    setValues((current) => {
+      const keys = new Set(categoryAssets.map((asset) => asset.asset_key));
+      const next = Object.fromEntries(Object.entries(current).filter(([key]) => !keys.has(key.split("|")[0])));
+      categoryAssets.forEach((asset) => { next[`${asset.asset_key}|${goalId}`] = asset.value_cny; });
+      return next;
+    });
+    setControls((current) => ({ ...current, ...Object.fromEntries(categoryAssets.map((asset) => [asset.asset_key, { goalId, mode: "FULL" as AllocationMode }])) }));
+  }
+
+  function clearCategory(assetType: string) {
+    const categoryAssets = assetsByType[assetType] || [];
+    const keys = new Set(categoryAssets.map((asset) => asset.asset_key));
+    allocationDraftDirtyRef.current = true;
+    setValues((current) => Object.fromEntries(Object.entries(current).filter(([key]) => !keys.has(key.split("|")[0]))));
+    setControls((current) => ({ ...current, ...Object.fromEntries(categoryAssets.map((asset) => [asset.asset_key, { goalId: current[asset.asset_key]?.goalId || data?.goals[0]?.id || "", mode: "" as AllocationMode }])) }));
+  }
+
+  function toggleCategory(assetType: string) {
+    setExpandedTypes((current) => {
+      const next = new Set(current);
+      if (next.has(assetType)) next.delete(assetType); else next.add(assetType);
+      return next;
+    });
   }
 
   async function saveAllocations() {
@@ -112,14 +203,26 @@ function FundingContent() {
         }
       }
       for (const asset of data?.assets || []) {
-        const total = drafts.filter((item) => item.asset_key === asset.asset_key).reduce((sum, item) => sum + Number(item.amount_cny), 0);
-        if (!Number.isFinite(total) || total > Number(asset.value_cny) + 0.005) {
+        const total = cents(drafts.filter((item) => item.asset_key === asset.asset_key).reduce((sum, item) => sum + Number(item.amount_cny), 0));
+        if (!Number.isFinite(total) || total > cents(asset.value_cny)) {
           throw new Error(`“${asset.name}”的归属金额不能超过资产全额 ${money(asset.value_cny)}。`);
         }
+        const control = controls[asset.asset_key];
+        if (control?.mode === "PARTIAL") {
+          const partial = cents(values[`${asset.asset_key}|${control.goalId}`] || "");
+          if (partial <= 0 || partial >= cents(asset.value_cny)) {
+            throw new Error(`“${asset.name}”选择了非全额放入，请填写大于 0 且小于 ${money(asset.value_cny)} 的金额。`);
+          }
+        }
       }
-      const result = await api<FundingMap>("/funding/allocations", { method: "PUT", body: JSON.stringify({ allocations: drafts }) });
+      const result = await api<FundingMap>("/funding/allocations", { method: "PUT", body: JSON.stringify({ snapshot_id: data?.snapshot_id, allocations: drafts }) });
       applyFundingMap(result);
-    } catch (e) { setError(errorMessage(e)); } finally { setSaving(false); }
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 409) {
+        const refreshed = await load();
+        setError(refreshed ? `${errorMessage(e)} 最新数据已自动载入，没有保存旧页面中的归属。` : `${errorMessage(e)} 自动载入失败，请检查网络后重试。`);
+      } else setError(errorMessage(e));
+    } finally { setSaving(false); }
   }
 
   async function addObligation(e: FormEvent) {
@@ -133,11 +236,17 @@ function FundingContent() {
   }
   async function removeObligation(id: string) {
     if (!confirm("确定删除这笔未来支出吗？")) return;
-    await api(`/funding/obligations/${id}`, { method: "DELETE" });
-    await load();
+    setError("");
+    try {
+      await api(`/funding/obligations/${id}`, { method: "DELETE" });
+      await load();
+    } catch (e) {
+      setError(errorMessage(e));
+    }
   }
 
   if (loading) return <><div className="page-head"><div><div className="eyebrow">ONE YUAN · ONE PURPOSE</div><h1>资金归属与自由净资产</h1></div></div><Skeleton height={520} /></>;
+  if (!data) return <Card className="card-pad"><Empty title="暂时无法读取资金归属" body={error || "请检查网络后重试。"} action={<Button onClick={() => void load()}>重新加载</Button>} /></Card>;
   if (!data?.has_snapshot) return <Card className="card-pad"><Empty title="先完成一次资产清算" body="有了真实资产明细，才能确保同一笔钱不会被多个目标重复使用。" action={<a href="/clearing"><Button>前往资产清算</Button></a>} /></Card>;
   return <>
     <div className="page-head funding-head"><div><div className="eyebrow">ONE YUAN · ONE PURPOSE</div><h1>自由净资产</h1><p>给每一笔已经有用途的钱一个归属，剩下的才是真正可以自由决定的部分。</p></div><Button onClick={() => setObligationOpen(true)}><Plus /> 记录未来支出</Button></div>
@@ -151,23 +260,47 @@ function FundingContent() {
     </section>
     <Card className="card-pad one-yuan-rule"><LockKeyhole /><div><strong>一元一归属</strong><p>{data.rule}</p></div></Card>
     <Card className="card-pad allocation-studio">
-      <div className="card-head"><div><h2>把真实资产分给未来目标</h2><p>每项资产先选目标，再选择全额或部分放入；保存时仍会严格检查资产总额。</p></div><Button loading={saving} onClick={saveAllocations}><Save /> 保存资金归属</Button></div>
-      {!data.goals.length ? <Empty title="还没有财务目标" body="先写下目标，再回来给它安排专属资金。" action={<a href="/goals"><Button>去写目标</Button></a>} /> : <div className="allocation-asset-list">{data.assets.map((asset) => {
-        const assigned = drafts.filter((item) => item.asset_key === asset.asset_key);
-        const used = assigned.reduce((sum, item) => sum + Number(item.amount_cny), 0);
-        const free = Number(asset.value_cny) - used;
-        const control = controls[asset.asset_key] || { goalId: data.goals[0]?.id || "", mode: "" };
-        const selectedAmount = values[`${asset.asset_key}|${control.goalId}`] || "";
-        return <article className="allocation-asset-card" key={asset.asset_key}>
-          <div className="allocation-asset-summary"><Wallet /><span><strong>{asset.name}</strong><small>{asset.account_alias || asset.asset_type}</small></span><div><small>当前全额</small><strong>{money(asset.value_cny)}</strong></div></div>
-          {assigned.length ? <div className="allocation-current"><span>当前归属</span>{assigned.map((item) => <Badge tone="purple" key={`${item.asset_key}|${item.goal_id}`}>{data.goals.find((goal) => goal.id === item.goal_id)?.name || "目标"} · {money(item.amount_cny)}</Badge>)}</div> : <div className="allocation-current empty-current"><span>当前还没有归属</span></div>}
-          <div className="allocation-controls">
-            <Field label="选定理财目标"><select value={control.goalId} onChange={(e) => selectGoal(asset.asset_key, e.target.value)}>{data.goals.map((goal) => <option value={goal.id} key={goal.id}>{goal.name}（已归属 {money(draftGoalTotals[goal.id])} / 目标 {money(goal.target_cny)}）</option>)}</select></Field>
-            <div className="allocation-mode-buttons" aria-label={`${asset.name}的放入方式`}><Button type="button" variant={control.mode === "FULL" ? "primary" : "secondary"} onClick={() => allocateFull(asset)}>全额放入</Button><Button type="button" variant={control.mode === "PARTIAL" ? "primary" : "secondary"} onClick={() => allocatePartial(asset)}>非全额放入</Button></div>
-            {control.mode === "PARTIAL" ? <Field label="手动输入放入金额" hint={`最多可填 ${money(asset.value_cny)}`}><input autoFocus inputMode="decimal" value={selectedAmount} onChange={(e) => replaceAssetAllocation(asset.asset_key, control.goalId, e.target.value)} placeholder="例如 10000" aria-label={`${asset.name}部分放入金额`} /></Field> : null}
+      <div className="card-head"><div><h2>按资产类别安排资金归属</h2><p>可以把现金、股票、基金等整个类别一次放入目标，也可以展开类别后逐项选择全额或部分金额。</p></div><Button loading={saving} onClick={saveAllocations}><Save /> 保存全部资金归属</Button></div>
+      {!data.goals.length ? <Empty title="还没有财务目标" body="先写下目标，再回来给它安排专属资金。" action={<a href="/goals"><Button>去写目标</Button></a>} /> : !data.assets.length ? <Empty title="最新清算里没有可归属资产" body="请先在资产清算中确认至少一项非负债资产。" action={<a href="/clearing"><Button>前往资产清算</Button></a>} /> : <div className="allocation-category-list">{data.asset_categories.map((category) => {
+        const categoryAssets = assetsByType[category.asset_type] || [];
+        const categoryKeys = new Set(categoryAssets.map((asset) => asset.asset_key));
+        const categoryDrafts = drafts.filter((item) => categoryKeys.has(item.asset_key));
+        const used = cents(categoryDrafts.reduce((sum, item) => sum + Number(item.amount_cny), 0));
+        const free = cents(Number(category.value_cny) - used);
+        const expanded = expandedTypes.has(category.asset_type);
+        const goalId = categoryGoals[category.asset_type] || data.goals[0]?.id || "";
+        return <section className="allocation-category-card" key={category.asset_type}>
+          <div className="allocation-category-summary">
+            <div className="allocation-category-icon"><Layers3 /></div>
+            <div><strong>{assetTypeLabels[category.asset_type] || category.asset_type}</strong><span>{category.asset_count} 项资产</span></div>
+            <div><small>类别总额</small><strong>{money(category.value_cny)}</strong></div>
+            <div><small>已安排</small><strong>{money(used)}</strong></div>
+            <div><small>仍可分配</small><strong className={free < 0 ? "negative" : ""}>{money(free)}</strong></div>
           </div>
-          <div className="allocation-asset-foot"><span>放入后仍可分配 <strong className={free < 0 ? "negative" : ""}>{money(free)}</strong></span>{assigned.length ? <button type="button" onClick={() => clearAssetAllocation(asset.asset_key)}>清除这项归属</button> : null}</div>
-        </article>;
+          <div className="allocation-category-actions">
+            <Field label="整类归属到"><select aria-label={`${assetTypeLabels[category.asset_type] || category.asset_type}整类归属目标`} value={goalId} onChange={(e) => setCategoryGoals((current) => ({ ...current, [category.asset_type]: e.target.value }))}>{data.goals.map((goal) => <option value={goal.id} key={goal.id}>{goal.name}（当前 {money(draftGoalTotals[goal.id])}）</option>)}</select></Field>
+            <Button type="button" onClick={() => allocateCategoryFull(category.asset_type)}>整类全部放入</Button>
+            {categoryDrafts.length ? <Button type="button" variant="ghost" onClick={() => clearCategory(category.asset_type)}>清除整类归属</Button> : null}
+            <Button type="button" variant="secondary" onClick={() => toggleCategory(category.asset_type)}>{expanded ? <ChevronUp /> : <ChevronDown />}{expanded ? "收起类别详情" : "进入类别详情"}</Button>
+          </div>
+          {expanded ? <div className="allocation-category-detail">{categoryAssets.map((asset) => {
+            const assigned = drafts.filter((item) => item.asset_key === asset.asset_key);
+            const assetUsed = cents(assigned.reduce((sum, item) => sum + Number(item.amount_cny), 0));
+            const assetFree = cents(Number(asset.value_cny) - assetUsed);
+            const control = controls[asset.asset_key] || { goalId: data.goals[0]?.id || "", mode: "" };
+            const selectedAmount = values[`${asset.asset_key}|${control.goalId}`] || "";
+            return <article className="allocation-asset-card" key={asset.asset_key}>
+              <div className="allocation-asset-summary"><Wallet /><span><strong>{asset.name}</strong><small>{asset.account_alias || assetTypeLabels[asset.asset_type] || asset.asset_type}</small></span><div><small>资产全额</small><strong>{money(asset.value_cny)}</strong></div></div>
+              {assigned.length ? <div className="allocation-current"><span>当前归属</span>{assigned.map((item) => <Badge tone="purple" key={`${item.asset_key}|${item.goal_id}`}>{data.goals.find((goal) => goal.id === item.goal_id)?.name || "目标已变化"} · {money(item.amount_cny)}</Badge>)}</div> : <div className="allocation-current empty-current"><span>当前还没有归属</span></div>}
+              <div className="allocation-controls">
+                <Field label="选定理财目标"><select value={control.goalId} onChange={(e) => selectGoal(asset.asset_key, e.target.value)}>{data.goals.map((goal) => <option value={goal.id} key={goal.id}>{goal.name}（当前 {money(draftGoalTotals[goal.id])} / 目标 {money(goal.target_cny)}）</option>)}</select></Field>
+                <div className="allocation-mode-buttons" aria-label={`${asset.name}的放入方式`}><Button type="button" variant={control.mode === "FULL" ? "primary" : "secondary"} onClick={() => allocateFull(asset)}>全额放入</Button><Button type="button" variant={control.mode === "PARTIAL" ? "primary" : "secondary"} onClick={() => allocatePartial(asset)}>非全额放入</Button></div>
+                {control.mode === "PARTIAL" ? <Field label="手动输入放入金额" hint={`最多可填 ${money(asset.value_cny)}`}><input autoFocus inputMode="decimal" value={selectedAmount} onChange={(e) => replaceAssetAllocation(asset.asset_key, control.goalId, e.target.value)} placeholder="例如 10000" aria-label={`${asset.name}部分放入金额`} /></Field> : null}
+              </div>
+              <div className="allocation-asset-foot"><span>放入后仍可分配 <strong className={assetFree < 0 ? "negative" : ""}>{money(assetFree)}</strong></span>{assigned.length ? <button type="button" onClick={() => clearAssetAllocation(asset.asset_key)}>清除这项归属</button> : null}</div>
+            </article>;
+          })}</div> : null}
+        </section>;
       })}</div>}
     </Card>
     <Card className="card-pad obligation-map">

@@ -1,7 +1,7 @@
 "use client";
 
 import { Protected } from "@/components/app-shell";
-import { Badge, Button, Card, Empty, Skeleton } from "@/components/ui";
+import { Badge, Button, Card, Skeleton } from "@/components/ui";
 import { api, errorMessage } from "@/lib/api";
 import type { AgentRecommendation } from "@/lib/agent";
 import { BookOpenCheck, Check, CircleAlert, Edit3, Focus, Pause, Save, ShieldCheck, Sparkles, X } from "lucide-react";
@@ -27,9 +27,10 @@ function ConstitutionContent() {
   async function saveRules() { setSaving(true); setError(""); try { await api("/constitution", { method: "PUT", body: JSON.stringify({ rules: rules.map((rule) => ({ rule_type: rule.rule_type, title: rule.title, parameters: rule.parameters, enabled: rule.enabled })) }) }); setEditing(false); await load(); } catch (e) { setError(errorMessage(e)); } finally { setSaving(false); } }
   async function generateFocus() { setFocusLoading(true); setError(""); try { setFocus(await api<FocusDraft>("/constitution/focus", { method: "POST", body: JSON.stringify({ message: "请选出本期最值得做的一件事", provider: "auto", depth: "complex" }) })); } catch (e) { setError(errorMessage(e)); } finally { setFocusLoading(false); } }
   async function acceptFocus() { if (!focus) return; setSaving(true); try { await api("/constitution/focus/accept", { method: "POST", body: JSON.stringify({ recommendation: focus.recommendation, verification: focus.verification }) }); setFocus(null); await load(); } catch (e) { setError(errorMessage(e)); } finally { setSaving(false); } }
-  async function setFocusStatus(status: string) { if (!data?.active_focus) return; await api(`/intelligence/actions/${data.active_focus.action.id}`, { method: "PATCH", body: JSON.stringify({ status }) }); await load(); }
+  async function setFocusStatus(status: string) { if (!data?.active_focus) return; setError(""); try { await api(`/intelligence/actions/${data.active_focus.action.id}`, { method: "PATCH", body: JSON.stringify({ status }) }); await load(); } catch (e) { setError(errorMessage(e)); } }
   function updateParameter(index: number, key: string, value: string) { setRules((current) => current.map((rule, i) => i === index ? { ...rule, parameters: { ...rule.parameters, [key]: Number(value) } } : rule)); }
   if (loading) return <><div className="page-head"><div><div className="eyebrow">MY FINANCIAL CONSTITUTION</div><h1>我的理财宪法</h1></div></div><Skeleton height={520} /></>;
+  if (!data) return <Card className="card-pad"><div className="inline-error"><CircleAlert />{error || "暂时无法读取理财规则"}</div><Button onClick={load}>重新加载</Button></Card>;
   return <>
     <div className="page-head constitution-head"><div><div className="eyebrow">MY FINANCIAL CONSTITUTION</div><h1>我的理财宪法</h1><p>先和怀特定下长期规则，以后的建议就有稳定边界，不会今天一个说法、明天又变一套。</p></div><Button variant={editing ? "secondary" : "primary"} onClick={() => editing ? saveRules() : setEditing(true)} loading={saving}>{editing ? <><Save /> 保存宪法</> : <><Edit3 /> 调整规则</>}</Button></div>
     {error ? <div className="inline-error"><CircleAlert />{error}</div> : null}

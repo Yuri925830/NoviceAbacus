@@ -9,7 +9,6 @@ import {
   ScanLine,
   ShieldCheck,
   Square,
-  UploadCloud,
 } from "lucide-react";
 import { PointerEvent, useEffect, useRef, useState } from "react";
 
@@ -30,6 +29,7 @@ export function PrivacyCanvas({
   const [ready, setReady] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
   const [completed, setCompleted] = useState(false);
+  const [fileError, setFileError] = useState("");
   const [history, setHistory] = useState<Snapshot[]>([]);
   const [index, setIndex] = useState(-1);
   useEffect(() => {
@@ -84,10 +84,17 @@ export function PrivacyCanvas({
     restore(history[next]);
   }
   function loadFile(file?: File) {
-    if (!file || !file.type.startsWith("image/")) return;
+    if (!file || !file.type.startsWith("image/")) {
+      setFileError("请选择 PNG、JPG、WebP 等图片文件。");
+      return;
+    }
     setFileName(file.name);
     setConfirmed(false);
     setCompleted(false);
+    setFileError("");
+    setReady(false);
+    setHistory([]);
+    setIndex(-1);
     const url = URL.createObjectURL(file);
     const image = new Image();
     image.onload = () => {
@@ -106,6 +113,10 @@ export function PrivacyCanvas({
       setIndex(0);
       setReady(true);
       URL.revokeObjectURL(url);
+    };
+    image.onerror = () => {
+      URL.revokeObjectURL(url);
+      setFileError("这张图片无法打开，请换一张有效图片再试。");
     };
     image.src = url;
   }
@@ -189,16 +200,19 @@ export function PrivacyCanvas({
         }}
       />
       {!ready ? (
-        <button
-          className="privacy-drop"
-          onClick={() => fileRef.current?.click()}
-        >
-          <div>
-            <ImagePlus />
-            <strong>{completed ? "继续识别下一张资产截图" : "选一张资产截图"}</strong>
-            <span>{completed ? "上一张已处理完成，可以直接接着上传。" : "选好以后，可以先把不想露出的信息遮住。"}</span>
-          </div>
-        </button>
+        <>
+          <button
+            className="privacy-drop"
+            onClick={() => fileRef.current?.click()}
+          >
+            <div>
+              <ImagePlus />
+              <strong>{completed ? "继续识别下一张资产截图" : "选一张资产截图"}</strong>
+              <span>{completed ? "上一张已处理完成，可以直接接着上传。" : "选好以后，可以先把不想露出的信息遮住。"}</span>
+            </div>
+          </button>
+          {fileError ? <div className="inline-error">{fileError}</div> : null}
+        </>
       ) : (
         <>
           <div className="editor-toolbar">

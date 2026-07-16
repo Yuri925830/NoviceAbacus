@@ -375,6 +375,7 @@ function GoalsContent() {
         <Skeleton height={420} />
       </>
     );
+  if (!goals.length && error) return <Card className="card-pad"><Empty title="暂时无法读取财务目标" body={error} action={<Button onClick={() => void load()}>重新加载</Button>} /></Card>;
 
   return (
     <>

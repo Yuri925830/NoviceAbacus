@@ -2,7 +2,7 @@
 
 import { Protected } from "@/components/app-shell";
 import { Badge, Button, Card, Empty, Field, Skeleton } from "@/components/ui";
-import { api, errorMessage, formatDate, money } from "@/lib/api";
+import { api, errorMessage, formatDate } from "@/lib/api";
 import { CircleAlert, FileSearch, FileText, FlaskConical, ScanLine, ShieldAlert, Sparkles, Trash2, Upload } from "lucide-react";
 import { FormEvent, useEffect, useRef, useState } from "react";
 
@@ -30,7 +30,7 @@ function XrayContent() {
   async function load() { try { const result = await api<Xray[]>("/xray"); setItems(result); setSelected((current) => current ? result.find((item) => item.id === current.id) || result[0] || null : result[0] || null); } catch (e) { setError(errorMessage(e)); } finally { setLoading(false); } }
   useEffect(() => { load(); }, []);
   async function analyze(e: FormEvent) { e.preventDefault(); if (!file) return; setAnalyzing(true); setError(""); const body = new FormData(); body.append("file", file); if (amount) body.append("intended_amount_cny", amount); try { const result = await api<Xray>("/xray", { method: "POST", body }); setSelected(result); setFile(null); if (fileRef.current) fileRef.current.value = ""; await load(); } catch (e) { setError(errorMessage(e)); } finally { setAnalyzing(false); } }
-  async function remove(id: string) { if (!confirm("确定删除这份产品 X 光吗？")) return; await api(`/xray/${id}`, { method: "DELETE" }); if (selected?.id === id) setSelected(null); await load(); }
+  async function remove(id: string) { if (!confirm("确定删除这份产品 X 光吗？")) return; setError(""); try { await api(`/xray/${id}`, { method: "DELETE" }); if (selected?.id === id) setSelected(null); await load(); } catch (e) { setError(errorMessage(e)); } }
   if (loading) return <><div className="page-head"><div><div className="eyebrow">PRODUCT X-RAY</div><h1>理财产品 X 光</h1></div></div><Skeleton height={520} /></>;
   return <>
     <div className="page-head xray-head"><div><div className="eyebrow">PRODUCT X-RAY</div><h1>理财产品 X 光</h1><p>把专业条款翻译成人话，再放回你的现金流里看看是否合拍。</p></div><Badge tone="purple"><ShieldAlert /> 不输出买入或卖出指令</Badge></div>

@@ -3444,6 +3444,18 @@ body::before {
 .one-yuan-rule svg { color: var(--purple); }
 .one-yuan-rule p { margin: 4px 0 0; color: var(--muted); font-size: 9px; }
 .allocation-studio, .obligation-map { margin-bottom: 15px; }
+.allocation-category-list { display: grid; gap: 13px; }
+.allocation-category-card { overflow: hidden; border: 1px solid rgba(121, 65, 180, .25); border-radius: 16px; background: rgba(255,255,255,.7); }
+.allocation-category-summary { display: grid; grid-template-columns: 40px minmax(150px, 1fr) repeat(3, minmax(105px, auto)); align-items: center; gap: 12px; padding: 16px; }
+.allocation-category-icon { display: grid; place-items: center; width: 38px; height: 38px; border-radius: 12px; background: var(--lavender); color: var(--purple); }
+.allocation-category-summary > div:not(.allocation-category-icon) { display: grid; gap: 3px; }
+.allocation-category-summary > div:nth-last-child(-n+3) { text-align: right; }
+.allocation-category-summary span, .allocation-category-summary small { color: var(--muted); font-size: 8px; }
+.allocation-category-summary strong { font-size: 11px; }
+.allocation-category-summary .negative { color: var(--danger); }
+.allocation-category-actions { display: grid; grid-template-columns: minmax(220px, 1fr) auto auto auto; align-items: end; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--line); background: #f6effb; }
+.allocation-category-actions .button { white-space: nowrap; }
+.allocation-category-detail { display: grid; gap: 10px; padding: 14px; border-top: 1px solid var(--line); background: rgba(239,228,249,.54); }
 .allocation-asset-list { display: grid; gap: 11px; }
 .allocation-asset-card { display: grid; gap: 12px; padding: 15px; border: 1px solid var(--line); border-radius: 15px; background: linear-gradient(135deg, #fff, #fbf7ff); }
 .allocation-asset-summary { display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; align-items: center; gap: 9px; }
@@ -3580,6 +3592,8 @@ body::before {
   .allocation-result-metrics, .decision-recommendations { grid-template-columns: repeat(2,1fr); }
   .allocation-controls { grid-template-columns: 1fr auto; }
   .allocation-controls > .field:last-child { grid-column: 1 / -1; }
+  .allocation-category-summary { grid-template-columns: 38px minmax(120px, 1fr) repeat(3, auto); }
+  .allocation-category-actions { grid-template-columns: 1fr auto; }
 }
 @media (max-width: 650px) {
   .privacy-drop { place-items: center; padding: 18px; background: linear-gradient(0deg, rgba(25,8,35,.32), rgba(25,8,35,.06)), url("/brand/huai-te-vault-v1.webp") 66% center/cover no-repeat; }
@@ -3612,6 +3626,12 @@ body::before {
   .allocation-controls { grid-template-columns: 1fr; }
   .allocation-controls > .field:last-child { grid-column: auto; }
   .allocation-mode-buttons .button { flex: 1; }
+  .allocation-category-summary { grid-template-columns: 34px 1fr 1fr; }
+  .allocation-category-summary > div:nth-last-child(-n+3) { text-align: left; }
+  .allocation-category-summary > div:nth-child(3) { text-align: right; }
+  .allocation-category-summary > div:nth-child(4) { grid-column: 2; }
+  .allocation-category-actions { grid-template-columns: 1fr; }
+  .allocation-category-actions .button { width: 100%; }
   .rule-row { grid-template-columns: 75px 1fr; }
   .rule-toggle { grid-column: 2; }
   .xray-hero { grid-template-columns: 1fr; padding: 22px; }

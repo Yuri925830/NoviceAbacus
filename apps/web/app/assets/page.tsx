@@ -28,13 +28,18 @@ function AssetsContent() {
   const router = useRouter();
   const load = () =>
     api<ClearingSession[]>("/sessions")
-      .then(setRows)
+      .then((result) => { setRows(result); setError(""); })
       .catch((e) => setError(errorMessage(e)));
   useEffect(() => {
     load();
   }, []);
   async function open(row: ClearingSession) {
-    setSelected(await api<ClearingSession>(`/sessions/${row.id}`));
+    setError("");
+    try {
+      setSelected(await api<ClearingSession>(`/sessions/${row.id}`));
+    } catch (e) {
+      setError(errorMessage(e));
+    }
   }
   async function revise(row: ClearingSession) {
     const reason = prompt(
@@ -42,18 +47,29 @@ function AssetsContent() {
       "修正资产金额或分类",
     );
     if (!reason) return;
-    await api(`/sessions/${row.id}/revise`, {
-      method: "POST",
-      body: JSON.stringify({ reason }),
-    });
-    router.push("/clearing");
+    setError("");
+    try {
+      await api(`/sessions/${row.id}/revise`, {
+        method: "POST",
+        body: JSON.stringify({ reason }),
+      });
+      router.push("/clearing");
+    } catch (e) {
+      setError(errorMessage(e));
+    }
   }
   async function remove(row: ClearingSession) {
     if (!confirm("确定删除这次清算？趋势、K 线和指标会随之重算。")) return;
-    await api(`/sessions/${row.id}`, { method: "DELETE" });
-    setSelected(null);
-    load();
+    setError("");
+    try {
+      await api(`/sessions/${row.id}`, { method: "DELETE" });
+      setSelected(null);
+      await load();
+    } catch (e) {
+      setError(errorMessage(e));
+    }
   }
+  if (!rows && error) return <Card className="card-pad"><Empty title="暂时无法读取清算历史" body={error} action={<Button onClick={load}>重新加载</Button>} /></Card>;
   if (!rows)
     return (
       <>

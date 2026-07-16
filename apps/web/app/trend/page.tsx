@@ -26,7 +26,7 @@ import {
   TrendingDown,
   TrendingUp,
 } from "lucide-react";
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useState } from "react";
 
 type Point = {
   session_id: string;
@@ -237,13 +237,12 @@ function AttributionWaterfall({ data, hidden }: { data: Attribution; hidden: boo
   const items = data.breakdown;
   const width = Math.max(760, (items.length + 1) * 128);
   const height = 330;
-  let running = 0;
-  const bars = items.map((item) => {
+  const bars = items.reduce<Array<(typeof items)[number] & { value: number; start: number; end: number }>>((result, item) => {
     const value = Number(item.value_cny);
-    const start = running;
-    running += value;
-    return { ...item, value, start, end: running };
-  });
+    const start = result.at(-1)?.end || 0;
+    result.push({ ...item, value, start, end: start + value });
+    return result;
+  }, []);
   const allValues = [0, ...bars.flatMap((item) => [item.start, item.end]), Number(data.total_change_cny)];
   const min = Math.min(...allValues, 0);
   const max = Math.max(...allValues, 0);
@@ -299,13 +298,17 @@ function TrendContent() {
     notes: "",
   });
   const { hidden } = usePrivacy();
-  const load = async () => {
+  const load = useCallback(async (signal?: AbortSignal) => {
+    setError("");
     try {
-      const next = await api<Trend>(`/trend?metric=${metric}&granularity=${view === "line" ? "clearing" : granularity}`);
+      const next = await api<Trend>(`/trend?metric=${metric}&granularity=${view === "line" ? "clearing" : granularity}`, { signal });
       setData(next);
       const latestPoint = next.points[next.points.length - 1];
       if (latestPoint) {
-        const result = await api<Attribution>(`/sessions/${latestPoint.session_id}/attribution`).catch(() => null);
+        const result = await api<Attribution>(`/sessions/${latestPoint.session_id}/attribution`, { signal }).catch((e) => {
+          if (e instanceof DOMException && e.name === "AbortError") throw e;
+          return null;
+        });
         setAttribution(result);
         if (result?.answers?.length) {
           setThreeAnswers({
@@ -313,29 +316,38 @@ function TrendContent() {
             amount: String(result.answers.find((item) => item.question_id === "amount")?.value || ""),
             remember: Boolean(result.answers.find((item) => item.question_id === "remember")?.value),
           });
-        }
+        } else setThreeAnswers({ cause: "", amount: "", remember: false });
       } else {
         setAttribution(null);
+        setThreeAnswers({ cause: "", amount: "", remember: false });
       }
+    } catch (e) {
+      if (e instanceof DOMException && e.name === "AbortError") return;
+      setError(errorMessage(e));
+    }
+  }, [granularity, metric, view]);
+  useEffect(() => {
+    const controller = new AbortController();
+    void load(controller.signal);
+    return () => controller.abort();
+  }, [load]);
+  async function addEvent(e: FormEvent) {
+    e.preventDefault();
+    setError("");
+    try {
+      await api("/trend/annotations", {
+        method: "POST",
+        body: JSON.stringify({
+          ...event,
+          event_at: new Date(event.event_at).toISOString(),
+        }),
+      });
+      setEventOpen(false);
+      setEvent((current) => ({ ...current, label: "", notes: "" }));
+      await load();
     } catch (e) {
       setError(errorMessage(e));
     }
-  };
-  useEffect(() => {
-    load();
-  }, [metric, granularity, view]);
-  async function addEvent(e: FormEvent) {
-    e.preventDefault();
-    await api("/trend/annotations", {
-      method: "POST",
-      body: JSON.stringify({
-        ...event,
-        event_at: new Date(event.event_at).toISOString(),
-      }),
-    });
-    setEventOpen(false);
-    setEvent({ ...event, label: "", notes: "" });
-    load();
   }
   async function interpretTrend() {
     setInsightLoading(true);

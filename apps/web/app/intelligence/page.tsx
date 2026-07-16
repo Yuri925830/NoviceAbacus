@@ -23,8 +23,8 @@ function IntelligenceContent() {
   useEffect(() => { load(); }, []);
   async function allocate(e: FormEvent) { e.preventDefault(); setPlanning(true); setError(""); try { setResult(await api<AllocationResult>("/intelligence/allocate", { method: "POST", body: JSON.stringify({ ...budget, monthly_safety_buffer_cny: budget.monthly_safety_buffer_cny || "0", depth: "complex" }) })); setSaved([]); } catch (e) { setError(errorMessage(e)); } finally { setPlanning(false); } }
   async function saveRecommendation(item: AgentRecommendation, index: number) { setError(""); try { await api("/intelligence/actions", { method: "POST", body: JSON.stringify(actionItemPayload(item, "DECISION_STUDIO")) }); setSaved((current) => [...current, index]); await load(); } catch (e) { setError(errorMessage(e)); } }
-  async function updateAction(id: string, status: string) { await api(`/intelligence/actions/${id}`, { method: "PATCH", body: JSON.stringify({ status }) }); await load(); }
-  async function removeAction(id: string) { await api(`/intelligence/actions/${id}`, { method: "DELETE" }); await load(); }
+  async function updateAction(id: string, status: string) { setError(""); try { await api(`/intelligence/actions/${id}`, { method: "PATCH", body: JSON.stringify({ status }) }); await load(); } catch (e) { setError(errorMessage(e)); } }
+  async function removeAction(id: string) { setError(""); try { await api(`/intelligence/actions/${id}`, { method: "DELETE" }); await load(); } catch (e) { setError(errorMessage(e)); } }
   if (loading) return <><div className="page-head"><div><div className="eyebrow">WHITE FINANCIAL TWIN</div><h1>怀特决策舱</h1></div></div><Skeleton height={560} /></>;
   if (!overview) return <Card className="card-pad"><Empty title="决策舱暂时没有打开" body={error || "请稍后再试"} /></Card>;
   return <>

@@ -7,8 +7,8 @@ from fastapi.testclient import TestClient
 from reportlab.pdfgen import canvas
 
 from app.database import Base, SessionLocal, engine
-from app.main import app
-from app.models import ClearingSession, SpendingDecision, SpendingProfile, User
+from app.main import app, stable_asset_key
+from app.models import AssetItem, ClearingSession, GoalFundingAllocation, SpendingDecision, SpendingProfile, User
 from app.security import decrypt_secret, hash_password
 
 
@@ -308,6 +308,91 @@ def test_integer_profile_values_and_action_ledger_are_accepted(client: TestClien
     assert action.status_code == 200, action.text
     assert action.json()["title"] == "建立应急储备"
     assert client.get("/intelligence/actions").json()[0]["source"] == "DECISION_STUDIO"
+
+    for frequency in ("CUSTOM", "YEARLY"):
+        missing_date = client.put("/schedule", json={"frequency": frequency, "hour": 20, "minute": 0})
+        assert missing_date.status_code == 422, missing_date.text
+        assert "日期" in missing_date.json()["detail"] or "月和日" in missing_date.json()["detail"]
+
+
+def test_funding_keys_precision_categories_and_stale_snapshot_are_safe(client: TestClient):
+    login(client)
+    first = client.post("/sessions", json={"kind": "AD_HOC"}).json()
+    for name, asset_type, value in [
+        ("零钱", "CASH", "26948.749"),
+        ("同名账户", "CASH", "10"),
+        ("同名账户", "CASH", "20"),
+        ("指数基金", "FUND", "300"),
+    ]:
+        created = client.post(f"/sessions/{first['id']}/items", json={
+            "name": name, "asset_type": asset_type, "category": asset_type,
+            "original_currency": "CNY", "original_value": value,
+            "liquidity_level": "HIGH", "is_liability": False,
+            "source": "MANUAL", "status": "CONFIRMED",
+        })
+        assert created.status_code == 200, created.text
+    confirmed = client.post(f"/sessions/{first['id']}/confirm", json={
+        "accept_stale_rates": False, "idempotency_key": "funding-edge-confirm-0001",
+    })
+    assert confirmed.status_code == 200, confirmed.text
+    goal = client.post("/goals", json={
+        "name": "完整边界测试", "goal_type": "NET_WORTH", "target_cny": "50000",
+        "included_asset_types": [],
+    }).json()
+
+    funding = client.get("/funding/map")
+    assert funding.status_code == 200, funding.text
+    payload = funding.json()
+    assert [(row["asset_type"], row["asset_count"]) for row in payload["asset_categories"]] == [("CASH", 3), ("FUND", 1)]
+    assert len({row["asset_key"] for row in payload["assets"]}) == 4
+    precise = next(row for row in payload["assets"] if row["name"] == "零钱")
+    assert precise["value_cny"] == "26948.75"
+
+    full = client.put("/funding/allocations", json={
+        "snapshot_id": payload["snapshot_id"],
+        "allocations": [{"asset_key": precise["asset_key"], "goal_id": goal["id"], "amount_cny": "26948.75"}],
+    })
+    assert full.status_code == 200, full.text
+    assert full.json()["allocations"][0]["amount_cny"] == "26948.75"
+    repeated = client.put("/funding/allocations", json={
+        "snapshot_id": payload["snapshot_id"],
+        "allocations": [{"asset_key": precise["asset_key"], "goal_id": goal["id"], "amount_cny": 26948.75}],
+    })
+    assert repeated.status_code == 200, repeated.text
+
+    with SessionLocal() as db:
+        latest_item = db.query(AssetItem).filter(AssetItem.name == "零钱").one()
+        legacy_key = stable_asset_key(latest_item)
+        db.query(GoalFundingAllocation).delete()
+        db.add(GoalFundingAllocation(user_id=latest_item.session.user_id, goal_id=goal["id"], asset_key=legacy_key, amount_cny="100"))
+        db.add(GoalFundingAllocation(user_id=latest_item.session.user_id, goal_id=goal["id"], asset_key="f" * 64, amount_cny="50"))
+        db.commit()
+    reconciled = client.get("/funding/map")
+    assert reconciled.status_code == 200, reconciled.text
+    assert reconciled.json()["allocations"] == [{
+        "id": reconciled.json()["allocations"][0]["id"],
+        "asset_key": precise["asset_key"], "goal_id": goal["id"], "amount_cny": "100.00",
+    }]
+
+    second = client.post("/sessions", json={"kind": "AD_HOC"}).json()
+    carried = next(row for row in second["items"] if row["name"] == "零钱")
+    renamed = client.patch(f"/sessions/{second['id']}/items/{carried['id']}", json={"name": "零钱（改名）"})
+    assert renamed.status_code == 200, renamed.text
+    second_confirmed = client.post(f"/sessions/{second['id']}/confirm", json={
+        "accept_stale_rates": False, "idempotency_key": "funding-edge-confirm-0002",
+    })
+    assert second_confirmed.status_code == 200, second_confirmed.text
+    after_carry = client.get("/funding/map").json()
+    renamed_asset = next(row for row in after_carry["assets"] if row["name"] == "零钱（改名）")
+    assert renamed_asset["asset_key"] == precise["asset_key"]
+    assert renamed_asset["committed_cny"] == "100.00"
+
+    stale = client.put("/funding/allocations", json={
+        "snapshot_id": payload["snapshot_id"],
+        "allocations": [{"asset_key": precise["asset_key"], "goal_id": goal["id"], "amount_cny": "1"}],
+    })
+    assert stale.status_code == 409
+    assert "资产清算刚刚更新" in stale.json()["detail"]
 
 
 def test_live_physical_gold_funding_guard_constitution_and_product_xray(client: TestClient, monkeypatch):

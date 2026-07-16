@@ -11,7 +11,6 @@ import {
   BatteryCharging,
   CalendarDays,
   CheckCircle2,
-  Clock3,
   Coins,
   Gauge,
   Lightbulb,
@@ -101,18 +100,26 @@ function SpendingContent() {
       setPreview(null);
       return;
     }
+    const controller = new AbortController();
     const timer = window.setTimeout(() => {
       api<SpendingSnapshot>("/spending/preview", {
         method: "POST",
+        signal: controller.signal,
         body: JSON.stringify({
           decision: decision.trim(),
           amount_cny: decimal(amount),
           category,
           planned_date: plannedDate || null,
         }),
-      }).then(setPreview).catch((e) => setError(errorMessage(e)));
+      }).then(setPreview).catch((e) => {
+        if (e instanceof DOMException && e.name === "AbortError") return;
+        setError(errorMessage(e));
+      });
     }, 320);
-    return () => window.clearTimeout(timer);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
   }, [amount, category, decision, plannedDate, snapshot?.ready]);
 
   async function saveProfile(event: React.FormEvent) {
@@ -139,7 +146,8 @@ function SpendingContent() {
   }
 
   async function judge() {
-    if (!decision.trim() || Number(decimal(amount)) <= 0) {
+    const parsedAmount = Number(decimal(amount));
+    if (!decision.trim() || !Number.isFinite(parsedAmount) || parsedAmount <= 0) {
       setError("告诉怀特你想做什么、准备花多少钱，就能开始裁决。");
       return;
     }
