@@ -10,7 +10,7 @@ __pycache__/
 *.tsbuildinfo
 *.db
 *.sqlite3
-data/
+/data/
 uploads/
 backups/
 node_modules/
