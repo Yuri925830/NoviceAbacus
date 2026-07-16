@@ -370,6 +370,8 @@ def me(user: Owner, db: DB) -> dict:
 
 @app.post("/auth/totp/setup")
 def totp_setup(user: Owner, db: DB) -> dict:
+    if user.totp_enabled:
+        raise HTTPException(status_code=409, detail="双重验证已经启用，无需重复绑定")
     secret = new_totp_secret()
     user.totp_secret_encrypted = encrypt_secret(secret)
     user.totp_enabled = False

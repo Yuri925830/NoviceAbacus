@@ -9,6 +9,7 @@ import {
   Skeleton,
 } from "@/components/ui";
 import { api, errorMessage, formatDate } from "@/lib/api";
+import type { Me } from "@/lib/types";
 import {
   CalendarClock,
   Check,
@@ -735,8 +736,26 @@ function TotpSetup() {
     [qr, setQr] = useState(""),
     [code, setCode] = useState(""),
     [codes, setCodes] = useState<string[]>([]),
+    [enabled, setEnabled] = useState<boolean | null>(null),
     [error, setError] = useState("");
+
+  useEffect(() => {
+    let active = true;
+    api<Me>("/auth/me")
+      .then((me) => {
+        if (active) setEnabled(me.totp_enabled);
+      })
+      .catch((caught) => {
+        if (active) setError(errorMessage(caught));
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
   async function begin() {
+    if (enabled) return;
+    setError("");
     try {
       const s = await api<{ secret: string; provisioning_uri: string }>(
         "/auth/totp/setup",
@@ -755,6 +774,7 @@ function TotpSetup() {
     }
   }
   async function verify() {
+    setError("");
     try {
       const r = await api<{ recovery_codes: string[] }>("/auth/totp/verify", {
         method: "POST",
@@ -762,6 +782,10 @@ function TotpSetup() {
       });
       setCodes(r.recovery_codes);
       setSetup(null);
+      setEnabled(true);
+      window.dispatchEvent(
+        new CustomEvent("totp-status-changed", { detail: { enabled: true } }),
+      );
     } catch (e) {
       setError(errorMessage(e));
     }
@@ -813,6 +837,36 @@ function TotpSetup() {
           </Button>
           {error ? <span className="danger-text">{error}</span> : null}
         </div>
+      </div>
+    );
+  if (enabled === null)
+    return error ? (
+      <div className="totp-idle">
+        <div>
+          <ShieldCheck />
+          <div>
+            <strong>暂时无法读取双重验证状态</strong>
+            <span>{error}</span>
+          </div>
+        </div>
+        <Button variant="secondary" onClick={() => window.location.reload()}>
+          重新读取
+        </Button>
+      </div>
+    ) : (
+      <Skeleton height={78} />
+    );
+  if (enabled)
+    return (
+      <div className="totp-idle">
+        <div>
+          <ShieldCheck />
+          <div>
+            <strong>双重验证已启用</strong>
+            <span>服务器已保存绑定状态；刷新页面或重新登录后仍会保持启用。</span>
+          </div>
+        </div>
+        <Badge tone="info">已启用</Badge>
       </div>
     );
   return (

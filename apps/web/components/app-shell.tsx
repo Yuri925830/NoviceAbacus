@@ -65,7 +65,7 @@ const navGroups = [
   },
 ];
 const utilityNav = [
-  { href: "/data", label: "数据与安全", icon: Database },
+  { href: "/data-security", label: "数据与安全", icon: Database },
   { href: "/settings", label: "系统设置", icon: Settings },
 ];
 const nav = [...navGroups.flatMap((group) => group.items), ...utilityNav];
@@ -92,6 +92,19 @@ export function Protected({ children }: { children: React.ReactNode }) {
     };
     window.addEventListener("goal-completion-confirmed", onGoalConfirmed);
     return () => window.removeEventListener("goal-completion-confirmed", onGoalConfirmed);
+  }, []);
+  useEffect(() => {
+    const onTotpStatusChanged = (event: Event) => {
+      const enabled = (event as CustomEvent<{ enabled: boolean }>).detail?.enabled;
+      if (typeof enabled !== "boolean") return;
+      setMe((current) => current ? {
+        ...current,
+        totp_enabled: enabled,
+        security_setup_required: !enabled,
+      } : current);
+    };
+    window.addEventListener("totp-status-changed", onTotpStatusChanged);
+    return () => window.removeEventListener("totp-status-changed", onTotpStatusChanged);
   }, []);
   if (loading)
     return (
@@ -206,7 +219,7 @@ function AppShell({ children, me }: { children: React.ReactNode; me: Me }) {
               {hidden ? <Eye size={18} /> : <EyeOff size={18} />}
               <span>{hidden ? "显示金额" : "隐藏金额"}</span>
             </button>
-            <Link className="notification-button" href={me.pending_goal_completions?.[0] ? `/goals?goal=${me.pending_goal_completions[0].id}` : "/data"} title={me.pending_goal_completions?.length ? "有理财目标等待确认" : "通知"}>
+            <Link className="notification-button" href={me.pending_goal_completions?.[0] ? `/goals?goal=${me.pending_goal_completions[0].id}` : "/data-security"} title={me.pending_goal_completions?.length ? "有理财目标等待确认" : "通知"}>
               <Bell size={19} />
               {me.unread_notifications > 0 ? (
                 <b>{Math.min(me.unread_notifications, 99)}</b>

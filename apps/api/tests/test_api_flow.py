@@ -42,6 +42,12 @@ def test_owner_auth_totp_and_complete_clearing_flow(client: TestClient):
     verified = client.post("/auth/totp/verify", json={"code": code})
     assert verified.status_code == 200
     assert len(verified.json()["recovery_codes"]) == 8
+    persisted = client.get("/auth/me")
+    assert persisted.json()["totp_enabled"] is True
+    assert persisted.json()["security_setup_required"] is False
+    duplicate_setup = client.post("/auth/totp/setup")
+    assert duplicate_setup.status_code == 409
+    assert client.get("/auth/me").json()["totp_enabled"] is True
 
     created = client.post("/sessions", json={"kind": "AD_HOC"})
     assert created.status_code == 200

@@ -89,7 +89,7 @@ test("OWNER can sign in, clear assets, and see the real dashboard", async ({
   ).toBeVisible();
   await page.screenshot({ path: "../../artifacts/trend.png", fullPage: true });
 
-  await page.goto("/data");
+  await page.goto("/data-security");
   await expect(
     page.getByRole("heading", {
       name: "你的底牌，可以带走，也可以验证后恢复。",
@@ -143,7 +143,7 @@ test("core experience remains usable on a phone viewport", async ({ page }) => {
     fullPage: true,
   });
 
-  await page.goto("/data");
+  await page.goto("/data-security");
   await expect(
     page.getByRole("heading", {
       name: "你的底牌，可以带走，也可以验证后恢复。",
