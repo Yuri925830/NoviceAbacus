@@ -72,6 +72,7 @@ def test_owner_auth_totp_and_complete_clearing_flow(client: TestClient):
     dashboard = client.get("/dashboard")
     assert dashboard.status_code == 200
     assert dashboard.json()["has_snapshot"] is True
+    assert dashboard.json()["snapshot"]["items"][0]["name"] == "A股账户"
     trend = client.get("/trend?metric=net_worth_cny&granularity=month")
     assert trend.status_code == 200
     assert trend.json()["analysis"]["data_level"] == "BASELINE"
@@ -393,6 +394,59 @@ def test_funding_keys_precision_categories_and_stale_snapshot_are_safe(client: T
     })
     assert stale.status_code == 409
     assert "资产清算刚刚更新" in stale.json()["detail"]
+
+
+def test_funding_incrementally_uses_only_unallocated_balance_across_goals(client: TestClient):
+    login(client)
+    session = client.post("/sessions", json={"kind": "AD_HOC"}).json()
+    for name, asset_type, value in [
+        ("股票资产", "STOCK", "10000"),
+        ("三年定期", "FIXED_DEPOSIT", "30000"),
+    ]:
+        created = client.post(f"/sessions/{session['id']}/items", json={
+            "name": name, "asset_type": asset_type, "category": asset_type,
+            "original_currency": "CNY", "original_value": value,
+            "liquidity_level": "HIGH", "is_liability": False,
+            "source": "MANUAL", "status": "CONFIRMED",
+        })
+        assert created.status_code == 200, created.text
+    confirmed = client.post(f"/sessions/{session['id']}/confirm", json={
+        "accept_stale_rates": False, "idempotency_key": "funding-incremental-confirm-0001",
+    })
+    assert confirmed.status_code == 200, confirmed.text
+    phone = client.post("/goals", json={
+        "name": "买手机", "goal_type": "NET_WORTH", "target_cny": "10000", "included_asset_types": [],
+    }).json()
+    travel = client.post("/goals", json={
+        "name": "旅行", "goal_type": "NET_WORTH", "target_cny": "50000", "included_asset_types": [],
+    }).json()
+    funding = client.get("/funding/map").json()
+    stock = next(asset for asset in funding["assets"] if asset["name"] == "股票资产")
+    deposit = next(asset for asset in funding["assets"] if asset["name"] == "三年定期")
+
+    phone_saved = client.put("/funding/allocations", json={
+        "snapshot_id": funding["snapshot_id"],
+        "allocations": [{"asset_key": stock["asset_key"], "goal_id": phone["id"], "amount_cny": "3000"}],
+    })
+    assert phone_saved.status_code == 200, phone_saved.text
+    phone_map = phone_saved.json()
+    assert next(asset for asset in phone_map["assets"] if asset["name"] == "股票资产")["free_cny"] == "7000.00"
+    assert next(asset for asset in phone_map["assets"] if asset["name"] == "三年定期")["free_cny"] == "30000.00"
+    assert next(goal for goal in phone_map["goals"] if goal["id"] == phone["id"])["allocated_cny"] == "3000.00"
+
+    travel_saved = client.put("/funding/allocations", json={
+        "snapshot_id": funding["snapshot_id"],
+        "allocations": [
+            {"asset_key": stock["asset_key"], "goal_id": phone["id"], "amount_cny": "3000"},
+            {"asset_key": stock["asset_key"], "goal_id": travel["id"], "amount_cny": "7000"},
+            {"asset_key": deposit["asset_key"], "goal_id": travel["id"], "amount_cny": "30000"},
+        ],
+    })
+    assert travel_saved.status_code == 200, travel_saved.text
+    travel_map = travel_saved.json()
+    assert next(goal for goal in travel_map["goals"] if goal["id"] == phone["id"])["allocated_cny"] == "3000.00"
+    assert next(goal for goal in travel_map["goals"] if goal["id"] == travel["id"])["allocated_cny"] == "37000.00"
+    assert all(asset["free_cny"] == "0.00" for asset in travel_map["assets"])
 
 
 def test_live_physical_gold_funding_guard_constitution_and_product_xray(client: TestClient, monkeypatch):

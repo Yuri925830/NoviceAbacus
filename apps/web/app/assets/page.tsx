@@ -75,8 +75,8 @@ function AssetsContent() {
       <>
         <div className="page-head">
           <div>
-            <div className="eyebrow">ASSET RECORDS</div>
-            <h1>资产与历史</h1>
+            <div className="eyebrow">CLEARING HISTORY</div>
+            <h1>清算历史记录</h1>
           </div>
         </div>
         <Skeleton height={370} />
@@ -86,8 +86,8 @@ function AssetsContent() {
     <>
       <div className="page-head">
         <div>
-          <div className="eyebrow">AUDITABLE HISTORY</div>
-          <h1>资产与历史</h1>
+          <div className="eyebrow">AUDITABLE CLEARING HISTORY</div>
+          <h1>清算历史记录</h1>
           <p>每次清算都会留下一张快照。后来发现哪里写错了，也能修订，同时保留之前的版本。</p>
         </div>
         <div className="page-actions">

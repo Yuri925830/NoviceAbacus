@@ -44,7 +44,7 @@ const navGroups = [
     label: "我的钱",
     items: [
       { href: "/clearing", label: "资产清算", icon: CalendarCheck },
-      { href: "/assets", label: "资产明细", icon: WalletCards },
+      { href: "/assets", label: "清算历史记录", icon: WalletCards },
       { href: "/trend", label: "资产变化", icon: ChartCandlestick },
     ],
   },

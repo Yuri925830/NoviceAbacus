@@ -1969,7 +1969,7 @@ def dashboard(user: Owner, db: DB) -> dict:
     if D(totals.get("liquid_assets_cny")) < D(totals.get("liabilities_cny")):
         risks.append({"level": "HIGH", "code": "LIQUIDITY", "title": "流动资金低于负债", "detail": "可立即使用资金低于当前负债余额，请核对还款节奏。"})
     return {
-        "has_snapshot": True, "snapshot": serialize_session(latest), "totals": totals,
+        "has_snapshot": True, "snapshot": serialize_session(latest, with_items=True), "totals": totals,
         "next_clearing_at": iso(schedule.next_run_at) if schedule else None,
         "goals": goals, "risks": risks, "trend": trend, "spending": build_spending_snapshot(db, user.id),
         "data_freshness": {"confirmed_at": iso(latest.confirmed_at), "fx_snapshot": latest.fx_snapshot_json, "completeness": str(latest.completeness)},

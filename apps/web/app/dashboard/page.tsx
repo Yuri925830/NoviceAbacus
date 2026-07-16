@@ -9,6 +9,8 @@ import {
   BatteryCharging,
   CalendarClock,
   ChartNoAxesCombined,
+  ChevronDown,
+  ChevronUp,
   CircleAlert,
   Coins,
   Landmark,
@@ -39,6 +41,7 @@ const assetPalette: Record<string, { color: string; soft: string }> = {
 function DashboardContent() {
   const [data, setData] = useState<Dashboard | null>(null);
   const [error, setError] = useState("");
+  const [expandedTypes, setExpandedTypes] = useState<Set<string>>(new Set());
   const { hidden } = usePrivacy();
   useEffect(() => {
     api<Dashboard>("/dashboard")
@@ -131,6 +134,29 @@ function DashboardContent() {
   const types = Object.entries(t.type_percentages || {}).sort(
     (a, b) => Number(b[1]) - Number(a[1]),
   );
+  const confirmedItems = (data.snapshot?.items || []).filter((item) =>
+    ["CONFIRMED", "REVISED"].includes(item.status),
+  );
+  function itemsForType(type: string) {
+    return confirmedItems.filter((item) =>
+      type === "LIABILITY"
+        ? item.is_liability
+        : !item.is_liability && item.asset_type === type,
+    );
+  }
+  function toggleType(type: string) {
+    setExpandedTypes((current) => {
+      const next = new Set(current);
+      if (next.has(type)) next.delete(type);
+      else next.add(type);
+      return next;
+    });
+  }
+  function toggleAllTypes() {
+    setExpandedTypes((current) =>
+      current.size === types.length ? new Set() : new Set(types.map(([type]) => type)),
+    );
+  }
   return (
     <>
       <div className="page-head">
@@ -244,17 +270,20 @@ function DashboardContent() {
                 <p>按人民币价值计算，不重复计入浮盈</p>
               </div>
             </div>
-            <Link href="/assets" className="text-link">
-              查看明细 <ArrowRight />
-            </Link>
+            <button type="button" className="text-link structure-detail-toggle" onClick={toggleAllTypes}>
+              {expandedTypes.size === types.length ? "收起全部明细" : "查看明细"}
+              {expandedTypes.size === types.length ? <ChevronUp /> : <ChevronDown />}
+            </button>
           </div>
           <div className="structure-list">
             {types.length ? (
               types.map(([key, value]) => {
                 const palette = assetPalette[key] || assetPalette.OTHER;
+                const typeItems = itemsForType(key);
+                const expanded = expandedTypes.has(key);
                 return (
                 <div
-                  className="structure-row"
+                  className={`structure-group ${expanded ? "expanded" : ""}`}
                   key={key}
                   style={
                     {
@@ -263,15 +292,41 @@ function DashboardContent() {
                     } as React.CSSProperties
                   }
                 >
-                  <div>
-                    <span className="structure-dot" />
-                    <strong>{labelType(key)}</strong>
-                    <em>{percent(value)}</em>
-                  </div>
-                  <div className="structure-track">
-                    <i style={{ width: `${Math.min(Number(value), 100)}%` }} />
-                  </div>
-                  <small>{money(t.by_type[key], hidden)}</small>
+                  <button
+                    type="button"
+                    className="structure-row"
+                    onClick={() => toggleType(key)}
+                    aria-expanded={expanded}
+                    aria-controls={`structure-details-${key}`}
+                  >
+                    <div>
+                      <span className="structure-dot" />
+                      <strong>{labelType(key)}</strong>
+                      <em>{percent(value)}</em>
+                    </div>
+                    <div className="structure-track">
+                      <i style={{ width: `${Math.min(Number(value), 100)}%` }} />
+                    </div>
+                    <small>{money(t.by_type[key], hidden)}</small>
+                    {expanded ? <ChevronUp /> : <ChevronDown />}
+                  </button>
+                  {expanded ? (
+                    <div className="structure-details" id={`structure-details-${key}`}>
+                      {typeItems.length ? typeItems.map((item) => (
+                        <div className="structure-asset-item" key={item.id}>
+                          <div>
+                            <strong>{item.name}</strong>
+                            <span>{item.account_alias || item.original_currency} · {liquidityLabel(item.liquidity_level)}</span>
+                          </div>
+                          <div>
+                            <small>原始金额</small>
+                            <span>{Number(item.original_value).toLocaleString("zh-CN")} {item.original_currency}</span>
+                          </div>
+                          <b>{money(item.value_cny, hidden)}</b>
+                        </div>
+                      )) : <p className="muted">这一类型在最新清算中暂无可展示的资产条目。</p>}
+                    </div>
+                  ) : null}
                 </div>
                 );
               })
@@ -414,13 +469,20 @@ function labelType(value: string) {
         STOCK: "股票",
         FUND: "基金",
         GOLD: "黄金",
+        PHYSICAL_GOLD: "实物黄金",
         PENSION: "公积金/养老金",
         PROPERTY: "房产",
+        VEHICLE: "车辆",
+        LOAN_RECEIVABLE: "借出款/应收款",
         FIXED_DEPOSIT: "定期存款",
+        LIABILITY: "负债",
         OTHER: "其他资产",
       } as Record<string, string>
     )[value] || value
   );
+}
+function liquidityLabel(value: string) {
+  return ({ HIGH: "高流动性", MEDIUM: "中等流动性", LOW: "低流动性", RESTRICTED: "受限" } as Record<string, string>)[value] || value;
 }
 export default function DashboardPage() {
   return (

@@ -53,7 +53,7 @@ function FundingContent() {
   const [data, setData] = useState<FundingMap | null>(null);
   const [values, setValues] = useState<Record<string, string>>({});
   const [controls, setControls] = useState<Record<string, AllocationControl>>({});
-  const [categoryGoals, setCategoryGoals] = useState<Record<string, string>>({});
+  const [selectedGoalId, setSelectedGoalId] = useState("");
   const [expandedTypes, setExpandedTypes] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -74,19 +74,8 @@ function FundingContent() {
     allocationDraftDirtyRef.current = false;
     setData(normalizedResult);
     setValues(Object.fromEntries(result.allocations.map((item) => [`${item.asset_key}|${item.goal_id}`, item.amount_cny])));
-    setControls(Object.fromEntries(result.assets.map((asset) => {
-      const assigned = result.allocations.filter((item) => item.asset_key === asset.asset_key);
-      const first = assigned[0];
-      const isFull = assigned.length === 1 && cents(first.amount_cny) === cents(asset.value_cny);
-      return [asset.asset_key, {
-        goalId: first?.goal_id || result.goals[0]?.id || "",
-        mode: isFull ? "FULL" : first ? "PARTIAL" : "",
-      }];
-    })));
-    setCategoryGoals((current) => Object.fromEntries(categoryRows.map((category) => {
-      const currentGoal = current[category.asset_type];
-      return [category.asset_type, result.goals.some((goal) => goal.id === currentGoal) ? currentGoal : result.goals[0]?.id || ""];
-    })));
+    setControls(Object.fromEntries(result.assets.map((asset) => [asset.asset_key, { goalId: "", mode: "" }])));
+    setSelectedGoalId((current) => result.goals.some((goal) => goal.id === current) ? current : result.goals[0]?.id || "");
   }, []);
 
   const load = useCallback(async (preserveSameSnapshotDraft = false): Promise<boolean> => {
@@ -129,60 +118,88 @@ function FundingContent() {
   const draftGoalTotals = useMemo(() => Object.fromEntries((data?.goals || []).map((goal) => [goal.id, drafts.filter((item) => item.goal_id === goal.id).reduce((sum, item) => sum + Number(item.amount_cny), 0)])), [data?.goals, drafts]);
   const assetsByType = useMemo(() => Object.fromEntries((data?.asset_categories || []).map((category) => [category.asset_type, (data?.assets || []).filter((asset) => asset.asset_type === category.asset_type)])), [data]);
 
-  function replaceAssetAllocation(assetKey: string, goalId: string, amount: string) {
+  function setAssetGoalAllocation(assetKey: string, goalId: string, amount: string) {
     allocationDraftDirtyRef.current = true;
     setValues((current) => {
-      const next = Object.fromEntries(Object.entries(current).filter(([key]) => !key.startsWith(`${assetKey}|`)));
-      if (amount) next[`${assetKey}|${goalId}`] = amount;
+      const next = { ...current };
+      const pairKey = `${assetKey}|${goalId}`;
+      if (amount) next[pairKey] = amount;
+      else delete next[pairKey];
       return next;
     });
   }
 
-  function selectGoal(assetKey: string, goalId: string) {
-    setControls((current) => ({ ...current, [assetKey]: { goalId, mode: "" } }));
+  function allocatedToOtherGoals(assetKey: string, goalId: string, source = values) {
+    return cents(Object.entries(source).reduce((sum, [key, amount]) => {
+      const [keyAsset, keyGoal] = key.split("|");
+      return keyAsset === assetKey && keyGoal !== goalId ? sum + cents(amount) : sum;
+    }, 0));
+  }
+
+  function changeSelectedGoal(goalId: string) {
+    setSelectedGoalId(goalId);
+    setControls((current) => Object.fromEntries(Object.keys(current).map((assetKey) => [assetKey, { goalId, mode: "" as AllocationMode }])));
   }
 
   function allocateFull(asset: FundingMap["assets"][number]) {
-    const goalId = controls[asset.asset_key]?.goalId || data?.goals[0]?.id || "";
+    const goalId = selectedGoalId;
     if (!goalId) return;
-    replaceAssetAllocation(asset.asset_key, goalId, asset.value_cny);
+    allocationDraftDirtyRef.current = true;
+    setValues((current) => {
+      const next = { ...current };
+      const availableToGoal = cents(cents(asset.value_cny) - allocatedToOtherGoals(asset.asset_key, goalId, current));
+      const pairKey = `${asset.asset_key}|${goalId}`;
+      if (availableToGoal > 0) next[pairKey] = String(availableToGoal);
+      else delete next[pairKey];
+      return next;
+    });
     setControls((current) => ({ ...current, [asset.asset_key]: { goalId, mode: "FULL" } }));
   }
 
   function allocatePartial(asset: FundingMap["assets"][number]) {
-    const goalId = controls[asset.asset_key]?.goalId || data?.goals[0]?.id || "";
+    const goalId = selectedGoalId;
     if (!goalId) return;
     const currentValue = values[`${asset.asset_key}|${goalId}`] || "";
-    const amount = cents(currentValue) > 0 && cents(currentValue) < cents(asset.value_cny) ? currentValue : "";
-    replaceAssetAllocation(asset.asset_key, goalId, amount);
+    const availableToGoal = cents(cents(asset.value_cny) - allocatedToOtherGoals(asset.asset_key, goalId));
+    const amount = cents(currentValue) > 0 && cents(currentValue) < availableToGoal ? currentValue : "";
+    setAssetGoalAllocation(asset.asset_key, goalId, amount);
     setControls((current) => ({ ...current, [asset.asset_key]: { goalId, mode: "PARTIAL" } }));
   }
 
   function clearAssetAllocation(assetKey: string) {
-    replaceAssetAllocation(assetKey, "", "");
-    setControls((current) => ({ ...current, [assetKey]: { goalId: current[assetKey]?.goalId || data?.goals[0]?.id || "", mode: "" } }));
+    if (!selectedGoalId) return;
+    setAssetGoalAllocation(assetKey, selectedGoalId, "");
+    setControls((current) => ({ ...current, [assetKey]: { goalId: selectedGoalId, mode: "" } }));
   }
 
   function allocateCategoryFull(assetType: string) {
-    const goalId = categoryGoals[assetType] || data?.goals[0]?.id || "";
+    const goalId = selectedGoalId;
     if (!goalId) return;
     const categoryAssets = assetsByType[assetType] || [];
     allocationDraftDirtyRef.current = true;
     setValues((current) => {
-      const keys = new Set(categoryAssets.map((asset) => asset.asset_key));
-      const next = Object.fromEntries(Object.entries(current).filter(([key]) => !keys.has(key.split("|")[0])));
-      categoryAssets.forEach((asset) => { next[`${asset.asset_key}|${goalId}`] = asset.value_cny; });
+      const next = { ...current };
+      categoryAssets.forEach((asset) => {
+        const pairKey = `${asset.asset_key}|${goalId}`;
+        const availableToGoal = cents(cents(asset.value_cny) - allocatedToOtherGoals(asset.asset_key, goalId, current));
+        if (availableToGoal > 0) next[pairKey] = String(availableToGoal);
+        else delete next[pairKey];
+      });
       return next;
     });
     setControls((current) => ({ ...current, ...Object.fromEntries(categoryAssets.map((asset) => [asset.asset_key, { goalId, mode: "FULL" as AllocationMode }])) }));
   }
 
   function clearCategory(assetType: string) {
+    if (!selectedGoalId) return;
     const categoryAssets = assetsByType[assetType] || [];
-    const keys = new Set(categoryAssets.map((asset) => asset.asset_key));
     allocationDraftDirtyRef.current = true;
-    setValues((current) => Object.fromEntries(Object.entries(current).filter(([key]) => !keys.has(key.split("|")[0]))));
-    setControls((current) => ({ ...current, ...Object.fromEntries(categoryAssets.map((asset) => [asset.asset_key, { goalId: current[asset.asset_key]?.goalId || data?.goals[0]?.id || "", mode: "" as AllocationMode }])) }));
+    setValues((current) => {
+      const next = { ...current };
+      categoryAssets.forEach((asset) => delete next[`${asset.asset_key}|${selectedGoalId}`]);
+      return next;
+    });
+    setControls((current) => ({ ...current, ...Object.fromEntries(categoryAssets.map((asset) => [asset.asset_key, { goalId: selectedGoalId, mode: "" as AllocationMode }])) }));
   }
 
   function toggleCategory(assetType: string) {
@@ -210,8 +227,9 @@ function FundingContent() {
         const control = controls[asset.asset_key];
         if (control?.mode === "PARTIAL") {
           const partial = cents(values[`${asset.asset_key}|${control.goalId}`] || "");
-          if (partial <= 0 || partial >= cents(asset.value_cny)) {
-            throw new Error(`“${asset.name}”选择了非全额放入，请填写大于 0 且小于 ${money(asset.value_cny)} 的金额。`);
+          const availableToGoal = cents(cents(asset.value_cny) - allocatedToOtherGoals(asset.asset_key, control.goalId));
+          if (partial <= 0 || partial >= availableToGoal) {
+            throw new Error(`“${asset.name}”选择了非全额放入，请填写大于 0 且小于当前目标最多可归属金额 ${money(availableToGoal)} 的金额。`);
           }
         }
       }
@@ -260,15 +278,25 @@ function FundingContent() {
     </section>
     <Card className="card-pad one-yuan-rule"><LockKeyhole /><div><strong>一元一归属</strong><p>{data.rule}</p></div></Card>
     <Card className="card-pad allocation-studio">
-      <div className="card-head"><div><h2>按资产类别安排资金归属</h2><p>可以把现金、股票、基金等整个类别一次放入目标，也可以展开类别后逐项选择全额或部分金额。</p></div><Button loading={saving} onClick={saveAllocations}><Save /> 保存全部资金归属</Button></div>
+      <div className="card-head allocation-studio-head">
+        <div><h2>按资产类别安排资金归属</h2><p>先在右侧统一选择归属目标，再把整个类别或单项资产全额、部分放入。</p></div>
+        <div className="allocation-studio-head-actions">
+          <Button loading={saving} onClick={saveAllocations}><Save /> 保存全部资金归属</Button>
+          <Field label="选择归属到哪里">
+            <select aria-label="统一选择资金归属目标" value={selectedGoalId} onChange={(e) => changeSelectedGoal(e.target.value)} disabled={!data.goals.length}>
+              {!data.goals.length ? <option value="">暂无理财目标</option> : data.goals.map((goal) => <option value={goal.id} key={goal.id}>{goal.name}（当前 {money(draftGoalTotals[goal.id])} / 目标 {money(goal.target_cny)}）</option>)}
+            </select>
+          </Field>
+        </div>
+      </div>
       {!data.goals.length ? <Empty title="还没有财务目标" body="先写下目标，再回来给它安排专属资金。" action={<a href="/goals"><Button>去写目标</Button></a>} /> : !data.assets.length ? <Empty title="最新清算里没有可归属资产" body="请先在资产清算中确认至少一项非负债资产。" action={<a href="/clearing"><Button>前往资产清算</Button></a>} /> : <div className="allocation-category-list">{data.asset_categories.map((category) => {
         const categoryAssets = assetsByType[category.asset_type] || [];
         const categoryKeys = new Set(categoryAssets.map((asset) => asset.asset_key));
         const categoryDrafts = drafts.filter((item) => categoryKeys.has(item.asset_key));
+        const selectedGoalCategoryDrafts = categoryDrafts.filter((item) => item.goal_id === selectedGoalId);
         const used = cents(categoryDrafts.reduce((sum, item) => sum + Number(item.amount_cny), 0));
         const free = cents(Number(category.value_cny) - used);
         const expanded = expandedTypes.has(category.asset_type);
-        const goalId = categoryGoals[category.asset_type] || data.goals[0]?.id || "";
         return <section className="allocation-category-card" key={category.asset_type}>
           <div className="allocation-category-summary">
             <div className="allocation-category-icon"><Layers3 /></div>
@@ -278,26 +306,26 @@ function FundingContent() {
             <div><small>仍可分配</small><strong className={free < 0 ? "negative" : ""}>{money(free)}</strong></div>
           </div>
           <div className="allocation-category-actions">
-            <Field label="整类归属到"><select aria-label={`${assetTypeLabels[category.asset_type] || category.asset_type}整类归属目标`} value={goalId} onChange={(e) => setCategoryGoals((current) => ({ ...current, [category.asset_type]: e.target.value }))}>{data.goals.map((goal) => <option value={goal.id} key={goal.id}>{goal.name}（当前 {money(draftGoalTotals[goal.id])}）</option>)}</select></Field>
             <Button type="button" onClick={() => allocateCategoryFull(category.asset_type)}>整类全部放入</Button>
-            {categoryDrafts.length ? <Button type="button" variant="ghost" onClick={() => clearCategory(category.asset_type)}>清除整类归属</Button> : null}
+            {selectedGoalCategoryDrafts.length ? <Button type="button" variant="ghost" onClick={() => clearCategory(category.asset_type)}>清除本目标的整类归属</Button> : null}
             <Button type="button" variant="secondary" onClick={() => toggleCategory(category.asset_type)}>{expanded ? <ChevronUp /> : <ChevronDown />}{expanded ? "收起类别详情" : "进入类别详情"}</Button>
           </div>
           {expanded ? <div className="allocation-category-detail">{categoryAssets.map((asset) => {
             const assigned = drafts.filter((item) => item.asset_key === asset.asset_key);
             const assetUsed = cents(assigned.reduce((sum, item) => sum + Number(item.amount_cny), 0));
             const assetFree = cents(Number(asset.value_cny) - assetUsed);
-            const control = controls[asset.asset_key] || { goalId: data.goals[0]?.id || "", mode: "" };
+            const control = controls[asset.asset_key] || { goalId: selectedGoalId, mode: "" };
             const selectedAmount = values[`${asset.asset_key}|${control.goalId}`] || "";
+            const selectedGoalAmount = values[`${asset.asset_key}|${selectedGoalId}`] || "";
+            const selectedGoalCapacity = cents(cents(asset.value_cny) - allocatedToOtherGoals(asset.asset_key, selectedGoalId));
             return <article className="allocation-asset-card" key={asset.asset_key}>
               <div className="allocation-asset-summary"><Wallet /><span><strong>{asset.name}</strong><small>{asset.account_alias || assetTypeLabels[asset.asset_type] || asset.asset_type}</small></span><div><small>资产全额</small><strong>{money(asset.value_cny)}</strong></div></div>
               {assigned.length ? <div className="allocation-current"><span>当前归属</span>{assigned.map((item) => <Badge tone="purple" key={`${item.asset_key}|${item.goal_id}`}>{data.goals.find((goal) => goal.id === item.goal_id)?.name || "目标已变化"} · {money(item.amount_cny)}</Badge>)}</div> : <div className="allocation-current empty-current"><span>当前还没有归属</span></div>}
               <div className="allocation-controls">
-                <Field label="选定理财目标"><select value={control.goalId} onChange={(e) => selectGoal(asset.asset_key, e.target.value)}>{data.goals.map((goal) => <option value={goal.id} key={goal.id}>{goal.name}（当前 {money(draftGoalTotals[goal.id])} / 目标 {money(goal.target_cny)}）</option>)}</select></Field>
                 <div className="allocation-mode-buttons" aria-label={`${asset.name}的放入方式`}><Button type="button" variant={control.mode === "FULL" ? "primary" : "secondary"} onClick={() => allocateFull(asset)}>全额放入</Button><Button type="button" variant={control.mode === "PARTIAL" ? "primary" : "secondary"} onClick={() => allocatePartial(asset)}>非全额放入</Button></div>
-                {control.mode === "PARTIAL" ? <Field label="手动输入放入金额" hint={`最多可填 ${money(asset.value_cny)}`}><input autoFocus inputMode="decimal" value={selectedAmount} onChange={(e) => replaceAssetAllocation(asset.asset_key, control.goalId, e.target.value)} placeholder="例如 10000" aria-label={`${asset.name}部分放入金额`} /></Field> : null}
+                {control.mode === "PARTIAL" ? <Field label="手动输入放入金额" hint={`当前目标最多可归属 ${money(selectedGoalCapacity)}；尚未归属余额 ${money(assetFree)}`}><input autoFocus inputMode="decimal" value={selectedAmount} onChange={(e) => setAssetGoalAllocation(asset.asset_key, control.goalId, e.target.value)} placeholder="例如 3000" aria-label={`${asset.name}部分放入金额`} /></Field> : null}
               </div>
-              <div className="allocation-asset-foot"><span>放入后仍可分配 <strong className={assetFree < 0 ? "negative" : ""}>{money(assetFree)}</strong></span>{assigned.length ? <button type="button" onClick={() => clearAssetAllocation(asset.asset_key)}>清除这项归属</button> : null}</div>
+              <div className="allocation-asset-foot"><span>尚未归属、仍可放入 <strong className={assetFree < 0 ? "negative" : ""}>{money(assetFree)}</strong></span>{cents(selectedGoalAmount) > 0 ? <button type="button" onClick={() => clearAssetAllocation(asset.asset_key)}>清除当前目标的这项归属</button> : null}</div>
             </article>;
           })}</div> : null}
         </section>;
